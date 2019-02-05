@@ -1,16 +1,82 @@
 # App Center SDK for Android Change Log
 
-## Version 1.9.0 (Under active development)
+## Version 1.11.3 (Under active development)
 
 ### AppCenter
 
-* **[Feature]** Added a `setMaxStorageSize` API which allows setting a maximum size limit on the local SQLite storage. Previously, up to 300 logs were stored of any size. The default value is 10MB.
-* **[Security]** To enforce TLS 1.2 on all HTTPS connections the SDK makes, we are dropping support for API level 15 (which supports only TLS 1.0), the minimum SDK version thus becomes 16. Previous versions of the SDK were already using TLS 1.2 on API level 16+.
+* **[Fix]** The SDK normally disables storing and sending logs when SQLite is failing instead of crashing the application. New SQLite APIs were introduced in version 1.9.0 and the new API exceptions were not caught, this is now fixed.
+
+### AppCenterDistribute
+
+* **[Fix]** Fix exception if we receive deep link intent with setup failure before `onStart`.
+* **[Fix]** Fix checking updates for applications installed on corporate-owned single-use devices.
+
+___
+
+## Version 1.11.2
+
+### AppCenter
+
+* **[Fix]** Fix TLS 1.2 configuration for some specific devices running API level <21. The bug did not affect all devices running older API levels, only some models/brands, and prevented any data from being sent.
 
 ### AppCenterAnalytics
 
-* **[Feature]** Added `pause`/`resume` APIs which pause/resume sending Analytics logs to App Center.
+* **[Fix]** Extend the current session instead of starting a new session when sending events from the background. Sessions are also no longer started in background by sending an event or a log from another service such as push, as a consequence the push registration information will be missing from crash events information.
+
+### AppCenterDistribute
+
+* **[Fix]** Fix issue with forcing Chrome to open links when other browsers are the default.
+
+___
+
+## Version 1.11.0
+
+### AppCenter
+
+* **[Feature]** Allow users to set userId that applies to crashes, error and push logs. This feature adds an API, but is not yet supported on the App Center backend.
+* **[Fix]** Do not delete old logs when trying to add a log larger than the maximum storage capacity.
+* **[Fix]** Fix error detection of `setMaxStorageSize` API if database uses custom page size.
+* **[Fix]** Fix minimum storage size verification to match minimum possible value.
+* **[Fix]** Fix disabling logging of network state changes according to `AppCenter.getLogLevel`.
+* **[Fix]** Fix logs duplication on unstable network.
+
+### AppCenterCrashes
+
+* **[Fix]** Fix a bug where crash data file could leak when the database is full.
+
+### AppCenterPush
+
+* **[Fix]** Fix push foreground listener after re-enabling push service.
+
+___
+
+## Version 1.10.0
+
+### AppCenterAnalytics
+
+* **[Feature]** Add API to specify event persistence priority.
+
+### AppCenterCrashes
+
+* **[Fix]** Preventing stack overflow crash while reading a huge throwable file.
+
+___
+
+## Version 1.9.0
+
+### AppCenter
+
+* **[Feature]** Add a `setMaxStorageSize` API which allows setting a maximum size limit on the local SQLite storage. Previously, up to 300 logs were stored of any size. The default value is 10MB.
+* **[Security]** To enforce TLS 1.2 on all HTTPS connections the SDK makes, we are dropping support for API level 15 (which supports only TLS 1.0), the minimum SDK version thus becomes 16. Previous versions of the SDK were already using TLS 1.2 on API level 16+.
+* **[Bug fix]** Fix validating and discarding `NaN` and infinite double values when calling `setCustomProperties`.
+
+### AppCenterAnalytics
+
+* **[Feature]** Add `pause`/`resume` APIs which pause/resume sending Analytics logs to App Center.
+* **[Feature]** Add support for typed properties. Note that these APIs still convert properties back to strings on the App Center backend. More work is needed to store and display typed properties in the App Center portal. Using the new APIs now will enable future scenarios, but for now the behavior will be the same as it is for current event properties.
 * **[Feature]** Preparation work for a future change in transmission protocol and endpoint for Analytics data. There is no impact on your current workflow when using App Center.
+
+___
 
 ## Version 1.8.0
 

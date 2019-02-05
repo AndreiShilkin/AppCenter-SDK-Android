@@ -19,9 +19,10 @@ import com.microsoft.appcenter.push.ingestion.models.PushInstallationLog;
 import com.microsoft.appcenter.push.ingestion.models.json.PushInstallationLogFactory;
 import com.microsoft.appcenter.utils.AppCenterLog;
 import com.microsoft.appcenter.utils.HandlerUtils;
+import com.microsoft.appcenter.utils.UserIdContext;
 import com.microsoft.appcenter.utils.async.AppCenterConsumer;
 import com.microsoft.appcenter.utils.async.AppCenterFuture;
-import com.microsoft.appcenter.utils.storage.StorageHelper;
+import com.microsoft.appcenter.utils.storage.SharedPreferencesManager;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -41,6 +42,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static com.microsoft.appcenter.Flags.DEFAULTS;
 import static com.microsoft.appcenter.utils.PrefStorageConstants.KEY_ENABLED;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -50,6 +52,7 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyBoolean;
+import static org.mockito.Matchers.anyInt;
 import static org.mockito.Matchers.anyString;
 import static org.mockito.Matchers.argThat;
 import static org.mockito.Matchers.eq;
@@ -72,7 +75,7 @@ import static org.powermock.api.mockito.PowerMockito.when;
         PushIntentUtils.class,
         AppCenterLog.class,
         AppCenter.class,
-        StorageHelper.PreferencesStorage.class,
+        SharedPreferencesManager.class,
         FirebaseInstanceId.class,
         FirebaseAnalytics.class,
         HandlerUtils.class
@@ -104,6 +107,7 @@ public class PushTest {
     @Before
     public void setUp() {
         Push.unsetInstance();
+        UserIdContext.unsetInstance();
         mockStatic(AppCenterLog.class);
         mockStatic(AppCenter.class);
         mockStatic(PushNotifier.class);
@@ -124,8 +128,8 @@ public class PushTest {
         }).when(mAppCenterHandler).post(any(Runnable.class), any(Runnable.class));
 
         /* First call to com.microsoft.appcenter.AppCenter.isEnabled shall return true, initial state. */
-        mockStatic(StorageHelper.PreferencesStorage.class);
-        when(StorageHelper.PreferencesStorage.getBoolean(PUSH_ENABLED_KEY, true)).thenReturn(true);
+        mockStatic(SharedPreferencesManager.class);
+        when(SharedPreferencesManager.getBoolean(PUSH_ENABLED_KEY, true)).thenReturn(true);
 
         /* Then simulate further changes to state. */
         doAnswer(new Answer<Object>() {
@@ -134,11 +138,11 @@ public class PushTest {
 
                 /* Whenever the new state is persisted, make further calls return the new state. */
                 boolean enabled = (Boolean) invocation.getArguments()[1];
-                when(StorageHelper.PreferencesStorage.getBoolean(PUSH_ENABLED_KEY, true)).thenReturn(enabled);
+                when(SharedPreferencesManager.getBoolean(PUSH_ENABLED_KEY, true)).thenReturn(enabled);
                 return null;
             }
-        }).when(StorageHelper.PreferencesStorage.class);
-        StorageHelper.PreferencesStorage.putBoolean(eq(PUSH_ENABLED_KEY), anyBoolean());
+        }).when(SharedPreferencesManager.class);
+        SharedPreferencesManager.putBoolean(eq(PUSH_ENABLED_KEY), anyBoolean());
 
         /* Mock Firebase instance. */
         mockStatic(FirebaseInstanceId.class);
@@ -199,7 +203,9 @@ public class PushTest {
         verify(channel).removeGroup(eq(push.getGroupName()));
         assertTrue(Push.isEnabled().get());
         verify(mFirebaseInstanceId).getToken();
-        verify(channel).enqueue(any(PushInstallationLog.class), eq(push.getGroupName()));
+        ArgumentCaptor<PushInstallationLog> log = ArgumentCaptor.forClass(PushInstallationLog.class);
+        verify(channel).enqueue(log.capture(), eq(push.getGroupName()), eq(DEFAULTS));
+        assertEquals(testToken, log.getValue().getPushToken());
         verify(mPackageManager).setComponentEnabledSetting(any(ComponentName.class),
                 eq(PackageManager.COMPONENT_ENABLED_STATE_DEFAULT), eq(PackageManager.DONT_KILL_APP));
 
@@ -209,7 +215,7 @@ public class PushTest {
 
         /* Verify behavior happened only once. */
         verify(mFirebaseInstanceId).getToken();
-        verify(channel).enqueue(any(PushInstallationLog.class), eq(push.getGroupName()));
+        verify(channel).enqueue(any(PushInstallationLog.class), eq(push.getGroupName()), eq(DEFAULTS));
 
         /* Disable. */
         Push.setEnabled(false).get();
@@ -233,7 +239,7 @@ public class PushTest {
 
         /* Verify behavior happened only once. */
         verify(mFirebaseInstanceId).getToken();
-        verify(channel).enqueue(any(PushInstallationLog.class), eq(push.getGroupName()));
+        verify(channel).enqueue(any(PushInstallationLog.class), eq(push.getGroupName()), eq(DEFAULTS));
 
         /* Make sure no logging when posting check activity intent commands. */
         Activity activity = mock(Activity.class);
@@ -282,14 +288,18 @@ public class PushTest {
         String testToken = "TEST";
         Push push = Push.getInstance();
         Channel channel = mock(Channel.class);
+        UserIdContext.getInstance().setUserId("alice");
         start(push, channel);
         assertTrue(Push.isEnabled().get());
         verify(mFirebaseInstanceId).getToken();
-        verify(channel, never()).enqueue(any(PushInstallationLog.class), eq(push.getGroupName()));
+        verify(channel, never()).enqueue(any(PushInstallationLog.class), eq(push.getGroupName()), anyInt());
 
         /* Refresh. */
         push.onTokenRefresh(testToken);
-        verify(channel).enqueue(any(PushInstallationLog.class), eq(push.getGroupName()));
+        ArgumentCaptor<PushInstallationLog> log = ArgumentCaptor.forClass(PushInstallationLog.class);
+        verify(channel).enqueue(log.capture(), eq(push.getGroupName()), eq(DEFAULTS));
+        assertEquals(testToken, log.getValue().getPushToken());
+        assertEquals("alice", log.getValue().getUserId());
 
         /* Only once. */
         verify(mFirebaseInstanceId).getToken();
@@ -297,7 +307,6 @@ public class PushTest {
 
     @Test
     public void receivedInForeground() {
-
         PushListener pushListener = mock(PushListener.class);
         Push.setListener(pushListener);
         Push push = Push.getInstance();
@@ -379,6 +388,37 @@ public class PushTest {
         runnable.get().run();
         verify(pushListener, never()).onPushNotificationReceived(eq(activity), captor.capture());
         verify(pushListener2).onPushNotificationReceived(eq(activity), captor.capture());
+    }
+
+    @Test
+    public void receivedInForegroundWhenInitiallyDisabled() {
+
+        /* Was disabled before start. */
+        when(SharedPreferencesManager.getBoolean(PUSH_ENABLED_KEY, true)).thenReturn(false);
+
+        /* Start. */
+        PushListener pushListener = mock(PushListener.class);
+        Push.setListener(pushListener);
+        Push push = Push.getInstance();
+        Channel channel = mock(Channel.class);
+        start(push, channel);
+        Activity activity = mock(Activity.class);
+        when(activity.getIntent()).thenReturn(mock(Intent.class));
+
+        /* Enable after activity resume. */
+        push.onActivityResumed(activity);
+        Push.setEnabled(true);
+
+        /* Mock some message. */
+        Intent pushIntent = createPushIntent("some title", "some message", null);
+        Push.getInstance().onMessageReceived(mContext, pushIntent);
+        ArgumentCaptor<PushNotification> captor = ArgumentCaptor.forClass(PushNotification.class);
+        verify(pushListener).onPushNotificationReceived(eq(activity), captor.capture());
+        PushNotification pushNotification = captor.getValue();
+        assertNotNull(pushNotification);
+        assertEquals("some title", pushNotification.getTitle());
+        assertEquals("some message", pushNotification.getMessage());
+        assertEquals(new HashMap<String, String>(), pushNotification.getCustomData());
     }
 
     @Test

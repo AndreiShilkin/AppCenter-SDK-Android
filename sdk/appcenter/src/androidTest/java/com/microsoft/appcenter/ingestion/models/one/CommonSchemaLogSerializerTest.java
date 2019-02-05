@@ -13,6 +13,7 @@ import java.util.Arrays;
 import java.util.Date;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 @SuppressWarnings("unused")
@@ -50,7 +51,15 @@ public class CommonSchemaLogSerializerTest {
         log.setExt(new Extensions());
         checkSerialization(serializer, log);
 
-        /* Add extension and fields 1 by 1. Start with protocol. */
+        /* Add extension and fields 1 by 1. */
+
+        /* Metadata extension. */
+        log.getExt().setMetadata(new MetadataExtension());
+        checkSerialization(serializer, log);
+        log.getExt().getMetadata().getMetadata().put("f", new JSONObject());
+        checkSerialization(serializer, log);
+
+        /* Protocol extension. */
         log.getExt().setProtocol(new ProtocolExtension());
         checkSerialization(serializer, log);
         log.getExt().getProtocol().setTicketKeys(Arrays.asList("First", "Second"));
@@ -62,6 +71,8 @@ public class CommonSchemaLogSerializerTest {
 
         /* User extension. */
         log.getExt().setUser(new UserExtension());
+        checkSerialization(serializer, log);
+        log.getExt().getUser().setLocalId("d:1234");
         checkSerialization(serializer, log);
         log.getExt().getUser().setLocale("en-US");
         checkSerialization(serializer, log);
@@ -88,6 +99,8 @@ public class CommonSchemaLogSerializerTest {
         log.getExt().getApp().setVer("1.2.3");
         checkSerialization(serializer, log);
         log.getExt().getApp().setLocale("fr-FR");
+        checkSerialization(serializer, log);
+        log.getExt().getApp().setUserId("c:charlie");
         checkSerialization(serializer, log);
 
         /* Net extension. */
@@ -117,15 +130,20 @@ public class CommonSchemaLogSerializerTest {
         /* Data. */
         log.setData(new Data());
         checkSerialization(serializer, log);
-        log.getData().getProperties().put("a", "b");
-        checkSerialization(serializer, log);
-
-        /* Check baseData and baseDataType from Part B not read into Part C. */
-        log.getData().getProperties().put("baseDataType", "custom");
+        log.getData().getProperties().put("baseType", "custom");
         log.getData().getProperties().put("baseData", new JSONObject());
+        log.getData().getProperties().put("a", "b");
         Log copy = serializer.deserializeLog(serializer.serializeLog(log), MockCommonSchemaLog.TYPE);
-        log.getData().getProperties().remove("baseData");
-        log.getData().getProperties().remove("baseDataType");
+
+        /*
+         * equals method not defined in JSONObject so it's comparing strings, which is order sensitive.
+         * Since now Part B is serialized first, it's order sensitive for those 2 keys.
+         * Need to compare Part B, then remove Part B then compare the rest with equals...
+         */
+        assertTrue(copy instanceof CommonSchemaLog);
+        CommonSchemaLog csCopy = (CommonSchemaLog) copy;
+        assertEquals(log.getData().getProperties().remove("baseType"), csCopy.getData().getProperties().remove("baseType"));
+        assertEquals(log.getData().getProperties().remove("baseData").toString(), csCopy.getData().getProperties().remove("baseData").toString());
         assertEquals(log, copy);
 
         /* Check deserialize fails without data type */

@@ -27,9 +27,11 @@ import com.microsoft.appcenter.utils.DeviceInfoHelper;
 import com.microsoft.appcenter.utils.IdHelper;
 import com.microsoft.appcenter.utils.NetworkStateHelper;
 import com.microsoft.appcenter.utils.PrefStorageConstants;
+import com.microsoft.appcenter.utils.UserIdContext;
 import com.microsoft.appcenter.utils.async.AppCenterFuture;
 import com.microsoft.appcenter.utils.async.DefaultAppCenterFuture;
-import com.microsoft.appcenter.utils.storage.StorageHelper;
+import com.microsoft.appcenter.utils.storage.FileManager;
+import com.microsoft.appcenter.utils.storage.SharedPreferencesManager;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -60,11 +62,10 @@ public class AppCenter {
     static final long DEFAULT_MAX_STORAGE_SIZE_IN_BYTES = 10 * 1024 * 1024;
 
     /**
-     * Minimum size allowed for set maximum size (SQL limitation). setMaxStorageSize could accept values
-     * as low as 16385 but in practice the lowest size set is the next highest multiple of 4096.
+     * Minimum size allowed for set maximum size (SQL limitation).
      */
     @VisibleForTesting
-    static final long MINIMUM_STORAGE_SIZE = 20480;
+    static final long MINIMUM_STORAGE_SIZE = 24 * 1024;
 
     /**
      * Group for sending logs.
@@ -397,7 +398,8 @@ public class AppCenter {
      * the new size, then the operation will fail and a warning will be emitted. Can only be called
      * once per app lifetime and only before AppCenter.start(...).
      * <p>
-     * If the size is not a multiple of 4096 bytes, the next multiple of 4096 is used as the new maximum size.
+     * If the size is not a multiple of database page size (default is 4096 bytes), the next multiple
+     * of page size is used as the new maximum size.
      *
      * @param storageSizeInBytes New size for the SQLite db in bytes.
      * @return Future with true result if succeeded, otherwise future with false result.
@@ -405,6 +407,29 @@ public class AppCenter {
     @SuppressWarnings("WeakerAccess") // TODO remove annotation when updating demo app for release.
     public static AppCenterFuture<Boolean> setMaxStorageSize(long storageSizeInBytes) {
         return getInstance().setInstanceMaxStorageSizeAsync(storageSizeInBytes);
+    }
+
+    /**
+     * {@link #setUserId(String)} implementation at instance level.
+     */
+    private synchronized void setInstanceUserId(String userId) {
+        if (!mConfiguredFromApp) {
+            AppCenterLog.error(LOG_TAG, "AppCenter must be configured from application, libraries cannot use call setUserId.");
+            return;
+        }
+        if (mAppSecret == null && mTransmissionTargetToken == null) {
+            AppCenterLog.error(LOG_TAG, "AppCenter must be configured with a secret from application to call setUserId.");
+            return;
+        }
+        if (userId != null) {
+            if (mAppSecret != null && !UserIdContext.checkUserIdValidForAppCenter(userId)) {
+                return;
+            }
+            if (mTransmissionTargetToken != null && !UserIdContext.checkUserIdValidForOneCollector(userId)) {
+                return;
+            }
+        }
+        UserIdContext.getInstance().setUserId(userId);
     }
 
     /**
@@ -705,7 +730,8 @@ public class AppCenter {
         Constants.loadFromContext(mApplication);
 
         /* If parameters are valid, init context related resources. */
-        StorageHelper.initialize(mApplication);
+        FileManager.initialize(mApplication);
+        SharedPreferencesManager.initialize(mApplication);
 
         /* Initialize session storage. */
         SessionContext.getInstance();
@@ -898,7 +924,7 @@ public class AppCenter {
             mStartedServicesNamesToLog.clear();
             StartServiceLog startServiceLog = new StartServiceLog();
             startServiceLog.setServices(allServiceNamesToStart);
-            mChannel.enqueue(startServiceLog, CORE_GROUP);
+            mChannel.enqueue(startServiceLog, CORE_GROUP, Flags.DEFAULTS);
         }
     }
 
@@ -932,7 +958,7 @@ public class AppCenter {
     private void queueCustomProperties(@NonNull Map<String, Object> properties) {
         CustomPropertiesLog customPropertiesLog = new CustomPropertiesLog();
         customPropertiesLog.setProperties(properties);
-        mChannel.enqueue(customPropertiesLog, CORE_GROUP);
+        mChannel.enqueue(customPropertiesLog, CORE_GROUP, Flags.DEFAULTS);
     }
 
     /**
@@ -965,7 +991,7 @@ public class AppCenter {
      * However after that it can be used from U.I. thread without breaking strict mode.
      */
     boolean isInstanceEnabled() {
-        return StorageHelper.PreferencesStorage.getBoolean(PrefStorageConstants.KEY_ENABLED, true);
+        return SharedPreferencesManager.getBoolean(PrefStorageConstants.KEY_ENABLED, true);
     }
 
     /**
@@ -993,7 +1019,7 @@ public class AppCenter {
 
         /* Update state now if true, services are checking this. */
         if (enabled) {
-            StorageHelper.PreferencesStorage.putBoolean(PrefStorageConstants.KEY_ENABLED, true);
+            SharedPreferencesManager.putBoolean(PrefStorageConstants.KEY_ENABLED, true);
         }
 
         /* Send started services. */
@@ -1012,7 +1038,7 @@ public class AppCenter {
 
         /* Update state now if false, services are checking if enabled while disabling. */
         if (!enabled) {
-            StorageHelper.PreferencesStorage.putBoolean(PrefStorageConstants.KEY_ENABLED, false);
+            SharedPreferencesManager.putBoolean(PrefStorageConstants.KEY_ENABLED, false);
         }
 
         /* Log current state. */
@@ -1068,6 +1094,23 @@ public class AppCenter {
             future.complete(null);
         }
         return future;
+    }
+
+    /**
+     * Set the user identifier for logs sent for the default target token when the secret
+     * passed in {@link AppCenter#start(Application, String, Class[])} contains "target={targetToken}".
+     * <p>
+     * The App Center servers currently do not yet use the user identifier so this API has not yet a use case
+     * when the secret passed to AppCenter.start contains a App Center application secret.
+     * <p>
+     * For App Center servers the user identifier maximum length is 256 characters.
+     * <p>
+     * AppCenter must be configured or started before this API can be used.
+     *
+     * @param userId user identifier.
+     */
+    public static void setUserId(String userId) {
+        getInstance().setInstanceUserId(userId);
     }
 
     @VisibleForTesting

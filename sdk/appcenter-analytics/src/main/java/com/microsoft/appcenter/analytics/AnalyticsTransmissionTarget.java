@@ -5,14 +5,17 @@ import android.support.annotation.NonNull;
 import android.support.annotation.VisibleForTesting;
 import android.support.annotation.WorkerThread;
 
+import com.microsoft.appcenter.AppCenter;
+import com.microsoft.appcenter.Flags;
 import com.microsoft.appcenter.channel.AbstractChannelListener;
 import com.microsoft.appcenter.channel.Channel;
 import com.microsoft.appcenter.ingestion.models.Log;
 import com.microsoft.appcenter.ingestion.models.one.CommonSchemaLog;
+import com.microsoft.appcenter.ingestion.models.one.PartAUtils;
 import com.microsoft.appcenter.utils.AppCenterLog;
 import com.microsoft.appcenter.utils.async.AppCenterFuture;
 import com.microsoft.appcenter.utils.async.DefaultAppCenterFuture;
-import com.microsoft.appcenter.utils.storage.StorageHelper;
+import com.microsoft.appcenter.utils.storage.SharedPreferencesManager;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -85,10 +88,16 @@ public class AnalyticsTransmissionTarget {
 
     /**
      * Add an authentication provider to associate logs with user identifiers.
+     * Events tracked previous to calling this method are not impacted by this call.
+     * If the callback from the authentication provider takes a long time to process,
+     * events might be tracked anonymously.
+     * <p>
+     * If you want to wait for authentication callback to complete before processing logs,
+     * you can pause and resume Analytics or a specific transmission target.
      *
      * @param authenticationProvider The authentication provider.
      */
-    public static synchronized void addAuthenticationProvider(AuthenticationProvider authenticationProvider) {
+    public static synchronized void addAuthenticationProvider(final AuthenticationProvider authenticationProvider) {
 
         /* Validate input. */
         if (authenticationProvider == null) {
@@ -109,6 +118,27 @@ public class AnalyticsTransmissionTarget {
         }
 
         /* Update current provider. */
+        if (AppCenter.isConfigured()) {
+            Analytics.getInstance().postCommandEvenIfDisabled(new Runnable() {
+
+                @Override
+                public void run() {
+                    updateProvider(authenticationProvider);
+                }
+            });
+        } else {
+            updateProvider(authenticationProvider);
+        }
+    }
+
+    /**
+     * Update authentication provider.
+     *
+     * @param authenticationProvider the new authentication provider.
+     */
+    private static void updateProvider(AuthenticationProvider authenticationProvider) {
+
+        /* Update reference. */
         sAuthenticationProvider = authenticationProvider;
 
         /* Request token now. */
@@ -117,44 +147,126 @@ public class AnalyticsTransmissionTarget {
 
     /**
      * Track a custom event with name.
+     * <p>
+     * The name cannot be null and needs to match the
+     * <tt>[a-zA-Z0-9]((\.(?!(\.|$)))|[_a-zA-Z0-9]){3,99}</tt> regular expression.
      *
      * @param name An event name.
      */
-    @SuppressWarnings({"WeakerAccess", "SameParameterValue"})
     public void trackEvent(String name) {
-        trackEvent(name, null);
+        trackEvent(name, (EventProperties) null, Flags.DEFAULTS);
     }
 
     /**
-     * Track a custom event with name and optional properties.
+     * Track a custom event with name and optional string properties.
+     * <p>
+     * The following rules apply:
+     * <ul>
+     * <li>The event name needs to match the <tt>[a-zA-Z0-9]((\.(?!(\.|$)))|[_a-zA-Z0-9]){3,99}</tt> regular expression.</li>
+     * <li>The property names or values cannot be null.</li>
+     * <li>The <tt>baseData</tt> and <tt>baseDataType</tt> properties are reserved and thus discarded.</li>
+     * <li>The full event size when encoded as a JSON string cannot be larger than 1.9MB.</li>
+     * </ul>
      *
      * @param name       An event name.
      * @param properties Optional properties.
      */
-    @SuppressWarnings("WeakerAccess")
     public void trackEvent(String name, Map<String, String> properties) {
+        trackEvent(name, properties, Flags.DEFAULTS);
+    }
+
+    /**
+     * Track a custom event with name and optional string properties.
+     * <p>
+     * The following rules apply:
+     * <ul>
+     * <li>The event name needs to match the <tt>[a-zA-Z0-9]((\.(?!(\.|$)))|[_a-zA-Z0-9]){3,99}</tt> regular expression.</li>
+     * <li>The property names or values cannot be null.</li>
+     * <li>The <tt>baseData</tt> and <tt>baseDataType</tt> properties are reserved and thus discarded.</li>
+     * <li>The full event size when encoded as a JSON string cannot be larger than 1.9MB.</li>
+     * </ul>
+     *
+     * @param name       An event name.
+     * @param properties Optional properties.
+     * @param flags      Optional flags. Events tracked with the {@link Flags#PERSISTENCE_CRITICAL}
+     *                   flag will take precedence over all other events in storage.
+     *                   An event tracked with this option will only be dropped
+     *                   if storage must make room for a newer event that is also marked with the
+     *                   {@link Flags#PERSISTENCE_CRITICAL} flag.
+     */
+    public void trackEvent(String name, Map<String, String> properties, int flags) {
+        EventProperties eventProperties = null;
+        if (properties != null) {
+            eventProperties = new EventProperties();
+            for (Map.Entry<String, String> entry : properties.entrySet()) {
+                eventProperties.set(entry.getKey(), entry.getValue());
+            }
+        }
+        trackEvent(name, eventProperties, flags);
+    }
+
+    /**
+     * Track a custom event with name and optional string properties.
+     * <p>
+     * The following rules apply:
+     * <ul>
+     * <li>The event name needs to match the <tt>[a-zA-Z0-9]((\.(?!(\.|$)))|[_a-zA-Z0-9]){3,99}</tt> regular expression.</li>
+     * <li>The property names or values cannot be null.</li>
+     * <li>Double values must be finite (NaN or Infinite values are discarded).</li>
+     * <li>The <tt>baseData</tt> and <tt>baseDataType</tt> properties are reserved and thus discarded.</li>
+     * <li>The full event size when encoded as a JSON string cannot be larger than 1.9MB.</li>
+     * </ul>
+     *
+     * @param name       An event name.
+     * @param properties Optional properties.
+     */
+    public void trackEvent(String name, EventProperties properties) {
+        trackEvent(name, properties, Flags.DEFAULTS);
+    }
+
+    /**
+     * Track a custom event with name and optional string properties.
+     * <p>
+     * The following rules apply:
+     * <ul>
+     * <li>The event name needs to match the <tt>[a-zA-Z0-9]((\.(?!(\.|$)))|[_a-zA-Z0-9]){3,99}</tt> regular expression.</li>
+     * <li>The property names or values cannot be null.</li>
+     * <li>Double values must be finite (NaN or Infinite values are discarded).</li>
+     * <li>The <tt>baseData</tt> and <tt>baseDataType</tt> properties are reserved and thus discarded.</li>
+     * <li>The full event size when encoded as a JSON string cannot be larger than 1.9MB.</li>
+     * </ul>
+     *
+     * @param name       An event name.
+     * @param properties Optional properties.
+     * @param flags      Optional flags. Events tracked with the {@link Flags#PERSISTENCE_CRITICAL}
+     *                   flag will take precedence over all other events in storage.
+     *                   An event tracked with this option will only be dropped
+     *                   if storage must make room for a newer event that is also marked with the
+     *                   {@link Flags#PERSISTENCE_CRITICAL} flag.
+     */
+    public void trackEvent(String name, EventProperties properties, int flags) {
 
         /* Merge common properties. More specific target wins conflicts. */
-        Map<String, String> mergedProperties = new HashMap<>();
+        EventProperties mergedProperties = new EventProperties();
         for (AnalyticsTransmissionTarget target = this; target != null; target = target.mParentTarget) {
             target.getPropertyConfigurator().mergeEventProperties(mergedProperties);
         }
 
         /* Override with parameter. */
         if (properties != null) {
-            mergedProperties.putAll(properties);
+            mergedProperties.getProperties().putAll(properties.getProperties());
         }
 
         /*
          * If we passed null as parameter and no common properties set,
          * keep null for consistency with Analytics class regarding null vs empty.
          */
-        else if (mergedProperties.isEmpty()) {
+        else if (mergedProperties.getProperties().isEmpty()) {
             mergedProperties = null;
         }
 
         /* Track event with merged properties. */
-        Analytics.trackEvent(name, mergedProperties, this);
+        Analytics.trackEvent(name, mergedProperties, this, flags);
     }
 
     /**
@@ -229,7 +341,7 @@ public class AnalyticsTransmissionTarget {
                         while (descendantIterator.hasNext()) {
                             AnalyticsTransmissionTarget descendantTarget = descendantIterator.next();
                             descendantIterator.remove();
-                            StorageHelper.PreferencesStorage.putBoolean(descendantTarget.getEnabledPreferenceKey(), enabled);
+                            SharedPreferencesManager.putBoolean(descendantTarget.getEnabledPreferenceKey(), enabled);
                             for (AnalyticsTransmissionTarget childTarget : descendantTarget.mChildrenTargets.values()) {
                                 descendantIterator.add(childTarget);
                             }
@@ -242,6 +354,34 @@ public class AnalyticsTransmissionTarget {
             }
         }, future, null);
         return future;
+    }
+
+    /**
+     * Pauses log transmission for this target.
+     * This does not pause child targets.
+     */
+    public void pause() {
+        Analytics.getInstance().post(new Runnable() {
+
+            @Override
+            public void run() {
+                mChannel.pauseGroup(Analytics.ANALYTICS_GROUP, mTransmissionTargetToken);
+            }
+        });
+    }
+
+    /**
+     * Resumes log transmission for this target.
+     * This does not resume child targets.
+     */
+    public void resume() {
+        Analytics.getInstance().post(new Runnable() {
+
+            @Override
+            public void run() {
+                mChannel.resumeGroup(Analytics.ANALYTICS_GROUP, mTransmissionTargetToken);
+            }
+        });
     }
 
     /**
@@ -269,7 +409,7 @@ public class AnalyticsTransmissionTarget {
     /**
      * Add ticket to common schema logs.
      */
-    private synchronized static void addTicketToLog(@NonNull Log log) {
+    private static void addTicketToLog(@NonNull Log log) {
 
         /* Decorate only common schema logs when an authentication provider was registered. */
         if (sAuthenticationProvider != null && log instanceof CommonSchemaLog) {
@@ -290,12 +430,12 @@ public class AnalyticsTransmissionTarget {
 
     @NonNull
     private String getEnabledPreferenceKey() {
-        return Analytics.getInstance().getEnabledPreferenceKeyPrefix() + mTransmissionTargetToken.split("-")[0];
+        return Analytics.getInstance().getEnabledPreferenceKeyPrefix() + PartAUtils.getTargetKey(mTransmissionTargetToken);
     }
 
     @WorkerThread
     private boolean isEnabledInStorage() {
-        return StorageHelper.PreferencesStorage.getBoolean(getEnabledPreferenceKey(), true);
+        return SharedPreferencesManager.getBoolean(getEnabledPreferenceKey(), true);
     }
 
     @WorkerThread

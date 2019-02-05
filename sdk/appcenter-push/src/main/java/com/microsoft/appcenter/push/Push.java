@@ -13,11 +13,13 @@ import android.support.annotation.VisibleForTesting;
 import android.util.Log;
 
 import com.microsoft.appcenter.AbstractAppCenterService;
+import com.microsoft.appcenter.Flags;
 import com.microsoft.appcenter.channel.Channel;
 import com.microsoft.appcenter.ingestion.models.json.LogFactory;
 import com.microsoft.appcenter.push.ingestion.models.PushInstallationLog;
 import com.microsoft.appcenter.push.ingestion.models.json.PushInstallationLogFactory;
 import com.microsoft.appcenter.utils.AppCenterLog;
+import com.microsoft.appcenter.utils.UserIdContext;
 import com.microsoft.appcenter.utils.async.AppCenterFuture;
 
 import java.util.HashMap;
@@ -224,7 +226,8 @@ public class Push extends AbstractAppCenterService {
     private void enqueuePushInstallationLog(@NonNull String pushToken) {
         PushInstallationLog log = new PushInstallationLog();
         log.setPushToken(pushToken);
-        mChannel.enqueue(log, PUSH_GROUP);
+        log.setUserId(UserIdContext.getInstance().getUserId());
+        mChannel.enqueue(log, PUSH_GROUP, Flags.DEFAULTS);
     }
 
     /**
@@ -325,13 +328,7 @@ public class Push extends AbstractAppCenterService {
 
     @Override
     public void onActivityPaused(Activity activity) {
-        postOnUiThread(new Runnable() {
-
-            @Override
-            public void run() {
-                mActivity = null;
-            }
-        });
+        mActivity = null;
     }
 
     private void checkPushInActivityIntent(Activity activity) {
@@ -347,12 +344,12 @@ public class Push extends AbstractAppCenterService {
             AppCenterLog.error(LOG_TAG, "Push.checkLaunchedFromNotification: intent may not be null");
             return;
         }
+        mActivity = activity;
         postOnUiThread(new Runnable() {
 
             @Override
             public void run() {
-                mActivity = activity;
-                checkPushInIntent(intent);
+                checkPushInIntent(activity, intent);
             }
         });
     }
@@ -362,7 +359,7 @@ public class Push extends AbstractAppCenterService {
      *
      * @param intent intent to inspect.
      */
-    private synchronized void checkPushInIntent(Intent intent) {
+    private synchronized void checkPushInIntent(Activity activity, Intent intent) {
         if (mInstanceListener != null) {
             String googleMessageId = PushIntentUtils.getMessageId(intent);
             if (googleMessageId != null && !googleMessageId.equals(mLastGoogleMessageId)
@@ -374,7 +371,7 @@ public class Push extends AbstractAppCenterService {
                 AppCenterLog.info(LOG_TAG, "Clicked push message from background id=" + googleMessageId);
                 mLastGoogleMessageId = googleMessageId;
                 AppCenterLog.debug(LOG_TAG, "Push intent extras=" + intent.getExtras());
-                mInstanceListener.onPushNotificationReceived(mActivity, notification);
+                mInstanceListener.onPushNotificationReceived(activity, notification);
             }
         }
     }

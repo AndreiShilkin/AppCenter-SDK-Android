@@ -77,8 +77,10 @@ public class OneCollectorChannelListener extends AbstractChannelListener {
     /**
      * Init with channel.
      *
-     * @param context context.
-     * @param channel channel.
+     * @param context       context.
+     * @param channel       channel.
+     * @param logSerializer log serializer.
+     * @param installId     installId.
      */
     public OneCollectorChannelListener(@NonNull Context context, @NonNull Channel channel, @NonNull LogSerializer logSerializer, @NonNull UUID installId) {
         mChannel = channel;
@@ -106,7 +108,7 @@ public class OneCollectorChannelListener extends AbstractChannelListener {
     }
 
     @Override
-    public void onPreparedLog(@NonNull Log log, @NonNull String groupName) {
+    public void onPreparedLog(@NonNull Log log, @NonNull String groupName, int flags) {
 
         /* Nothing to do on common schema log prepared. */
         if (!isOneCollectorCompatible(log)) {
@@ -122,8 +124,13 @@ public class OneCollectorChannelListener extends AbstractChannelListener {
             return;
         }
 
-        /* Add SDK extension part A fields. libVer is already set. */
+        /* Add additional part A fields that are not known by the modules during conversion. */
         for (CommonSchemaLog commonSchemaLog : commonSchemaLogs) {
+
+            /* Add flags. */
+            commonSchemaLog.setFlags((long) flags);
+
+            /* Add SDK extension missing fields: installId, epoch and seq. libVer is already set. */
             EpochAndSeq epochAndSeq = mEpochsAndSeqsByIKey.get(commonSchemaLog.getIKey());
             if (epochAndSeq == null) {
                 epochAndSeq = new EpochAndSeq(UUIDUtils.randomUUID().toString());
@@ -138,7 +145,7 @@ public class OneCollectorChannelListener extends AbstractChannelListener {
         /* Enqueue logs to one collector group. */
         String oneCollectorGroupName = getOneCollectorGroupName(groupName);
         for (CommonSchemaLog commonSchemaLog : commonSchemaLogs) {
-            mChannel.enqueue(commonSchemaLog, oneCollectorGroupName);
+            mChannel.enqueue(commonSchemaLog, oneCollectorGroupName, flags);
         }
     }
 
@@ -168,19 +175,19 @@ public class OneCollectorChannelListener extends AbstractChannelListener {
     }
 
     @Override
-    public void onPaused(@NonNull String groupName) {
+    public void onPaused(@NonNull String groupName, String targetToken) {
         if (isOneCollectorGroup(groupName)) {
             return;
         }
-        mChannel.pauseGroup(getOneCollectorGroupName(groupName));
+        mChannel.pauseGroup(getOneCollectorGroupName(groupName), targetToken);
     }
 
     @Override
-    public void onResumed(@NonNull String groupName) {
+    public void onResumed(@NonNull String groupName, String targetToken) {
         if (isOneCollectorGroup(groupName)) {
             return;
         }
-        mChannel.resumeGroup(getOneCollectorGroupName(groupName));
+        mChannel.resumeGroup(getOneCollectorGroupName(groupName), targetToken);
     }
 
     /**

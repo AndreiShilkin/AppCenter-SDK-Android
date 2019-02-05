@@ -1,4 +1,4 @@
-[![codecov](https://codecov.io/gh/Microsoft/AppCenter-SDK-Android/branch/develop/graph/badge.svg?token=YwMZRPnYK3)](https://codecov.io/gh/Microsoft/AppCenter-SDK-Android)
+[![Coverage Status](https://coveralls.io/repos/github/Microsoft/AppCenter-SDK-Android/badge.svg?branch=develop)](https://coveralls.io/github/Microsoft/AppCenter-SDK-Android?branch=develop)
 [![GitHub Release](https://img.shields.io/github/release/Microsoft/AppCenter-SDK-Android.svg)](https://github.com/Microsoft/AppCenter-SDK-Android/releases/latest)
 [![Bintray](https://api.bintray.com/packages/vsappcenter/appcenter/appcenter/images/download.svg)](https://bintray.com/vsappcenter/appcenter)
 [![license](https://img.shields.io/badge/license-MIT%20License-00AAAA.svg)](https://github.com/Microsoft/AppCenter-SDK-Android/blob/master/license.txt)
@@ -35,9 +35,9 @@ You must sign a [Contributor License Agreement](https://cla.microsoft.com/) befo
 
 ## 3. Contact
 
-### 3.1 Intercom
+### 3.1 Support
 
-If you have further questions, want to provide feedback or you are running into issues, log in to the [App Center portal](https://appcenter.ms) and use the blue Intercom button on the bottom right to start a conversation with us.
+App Center SDK support is provided directly within the App Center portal. Any time you need help, just log in to [App Center](https://appcenter.ms), then click the blue chat button in the lower-right corner of any page and our dedicated support team will respond to your questions and feedback. For additional information, see the [App Center Help Center](https://intercom.help/appcenter/getting-started/welcome-to-app-center-support).
 
 ### 3.2 Twitter
 We're on Twitter as [@vsappcenter](https://www.twitter.com/vsappcenter).

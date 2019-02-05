@@ -2,6 +2,7 @@ package com.microsoft.appcenter.channel;
 
 import android.content.Context;
 
+import com.microsoft.appcenter.Flags;
 import com.microsoft.appcenter.ingestion.AppCenterIngestion;
 import com.microsoft.appcenter.ingestion.Ingestion;
 import com.microsoft.appcenter.ingestion.models.Log;
@@ -17,8 +18,10 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyInt;
+import static org.mockito.Matchers.anyListOf;
 import static org.mockito.Matchers.anyLong;
 import static org.mockito.Matchers.anyString;
+import static org.mockito.Matchers.eq;
 import static org.mockito.Matchers.notNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -41,7 +44,7 @@ public class DefaultChannelOtherOperationsTest extends AbstractDefaultChannelTes
     }
 
     @Test
-    public void listener() {
+    public void logCallbacks() {
 
         @SuppressWarnings("ConstantConditions")
         DefaultChannel channel = new DefaultChannel(mock(Context.class), UUIDUtils.randomUUID().toString(), mock(Persistence.class), mock(AppCenterIngestion.class), mAppCenterHandler);
@@ -51,9 +54,9 @@ public class DefaultChannelOtherOperationsTest extends AbstractDefaultChannelTes
 
         /* Check enqueue. */
         Log log = mock(Log.class);
-        channel.enqueue(log, TEST_GROUP);
+        channel.enqueue(log, TEST_GROUP, Flags.DEFAULTS);
         verify(listener).onPreparingLog(log, TEST_GROUP);
-        verify(listener).onPreparedLog(log, TEST_GROUP);
+        verify(listener).onPreparedLog(log, TEST_GROUP, Flags.DEFAULTS);
         verify(listener).shouldFilter(log);
         verifyNoMoreInteractions(listener);
 
@@ -65,7 +68,7 @@ public class DefaultChannelOtherOperationsTest extends AbstractDefaultChannelTes
         /* Check no more calls after removing listener. */
         log = mock(Log.class);
         channel.removeListener(listener);
-        channel.enqueue(log, TEST_GROUP);
+        channel.enqueue(log, TEST_GROUP, Flags.DEFAULTS);
         verifyNoMoreInteractions(listener);
     }
 
@@ -90,13 +93,13 @@ public class DefaultChannelOtherOperationsTest extends AbstractDefaultChannelTes
         Persistence mockPersistence = mock(Persistence.class);
         AppCenterIngestion mockIngestion = mock(AppCenterIngestion.class);
         Channel.GroupListener mockListener = mock(Channel.GroupListener.class);
-        when(mockPersistence.getLogs(any(String.class), anyInt(), Matchers.<List<Log>>any()))
+        when(mockPersistence.getLogs(any(String.class), anyListOf(String.class), anyInt(), Matchers.<List<Log>>any()))
                 .then(getGetLogsAnswer(1));
         DefaultChannel channel = new DefaultChannel(mock(Context.class), UUIDUtils.randomUUID().toString(), mockPersistence, mockIngestion, mAppCenterHandler);
         channel.addGroup(TEST_GROUP, 1, BATCH_TIME_INTERVAL, MAX_PARALLEL_BATCHES, null, mockListener);
 
         /* Enqueuing 1 event. */
-        channel.enqueue(mock(Log.class), TEST_GROUP);
+        channel.enqueue(mock(Log.class), TEST_GROUP, Flags.DEFAULTS);
         verify(mockListener).onBeforeSending(notNull(Log.class));
 
         channel.shutdown();
@@ -127,14 +130,14 @@ public class DefaultChannelOtherOperationsTest extends AbstractDefaultChannelTes
             when(listener2.shouldFilter(log)).thenReturn(true);
 
             /* When we enqueue that log. */
-            channel.enqueue(log, TEST_GROUP);
+            channel.enqueue(log, TEST_GROUP, Flags.DEFAULTS);
 
             /* Then except the following. behaviors. */
             verify(listener1).onPreparingLog(log, TEST_GROUP);
             verify(listener1).shouldFilter(log);
             verify(listener2).onPreparingLog(log, TEST_GROUP);
             verify(listener2).shouldFilter(log);
-            verify(persistence, never()).putLog(TEST_GROUP, log);
+            verify(persistence, never()).putLog(eq(log), eq(TEST_GROUP), anyInt());
         }
 
         /* Given 1 log. */
@@ -145,7 +148,7 @@ public class DefaultChannelOtherOperationsTest extends AbstractDefaultChannelTes
             when(listener2.shouldFilter(log)).thenReturn(false);
 
             /* When we enqueue that log. */
-            channel.enqueue(log, TEST_GROUP);
+            channel.enqueue(log, TEST_GROUP, Flags.DEFAULTS);
 
             /* Then except the following. behaviors. */
             verify(listener1).onPreparingLog(log, TEST_GROUP);
@@ -154,7 +157,7 @@ public class DefaultChannelOtherOperationsTest extends AbstractDefaultChannelTes
 
             /* Second listener skipped since first listener filtered out. */
             verify(listener2, never()).shouldFilter(log);
-            verify(persistence, never()).putLog(TEST_GROUP, log);
+            verify(persistence, never()).putLog(eq(log), eq(TEST_GROUP), anyInt());
         }
 
         /* Given 1 log. */
@@ -165,19 +168,19 @@ public class DefaultChannelOtherOperationsTest extends AbstractDefaultChannelTes
             when(listener2.shouldFilter(log)).thenReturn(false);
 
             /* When we enqueue that log. */
-            channel.enqueue(log, TEST_GROUP);
+            channel.enqueue(log, TEST_GROUP, Flags.DEFAULTS);
 
             /* Then except the following. behaviors. */
             verify(listener1).onPreparingLog(log, TEST_GROUP);
             verify(listener1).shouldFilter(log);
             verify(listener2).onPreparingLog(log, TEST_GROUP);
             verify(listener2).shouldFilter(log);
-            verify(persistence).putLog(TEST_GROUP, log);
+            verify(persistence).putLog(log, TEST_GROUP, Flags.PERSISTENCE_NORMAL);
         }
     }
 
     @Test
-    public void groupListeners() {
+    public void groupCallbacks() {
         Persistence persistence = mock(Persistence.class);
         Ingestion ingestion = mock(Ingestion.class);
         Channel.Listener listener = spy(new AbstractChannelListener());
@@ -186,10 +189,14 @@ public class DefaultChannelOtherOperationsTest extends AbstractDefaultChannelTes
         Channel.GroupListener groupListener = mock(Channel.GroupListener.class);
         channel.addGroup(TEST_GROUP, 50, BATCH_TIME_INTERVAL, MAX_PARALLEL_BATCHES, null, groupListener);
         verify(listener).onGroupAdded(TEST_GROUP, groupListener);
-        channel.pauseGroup(TEST_GROUP);
-        verify(listener).onPaused(TEST_GROUP);
-        channel.resumeGroup(TEST_GROUP);
-        verify(listener).onResumed(TEST_GROUP);
+        channel.pauseGroup(TEST_GROUP, null);
+        verify(listener).onPaused(TEST_GROUP, null);
+        channel.pauseGroup(TEST_GROUP, "token");
+        verify(listener).onPaused(TEST_GROUP, "token");
+        channel.resumeGroup(TEST_GROUP, null);
+        verify(listener).onResumed(TEST_GROUP, null);
+        channel.resumeGroup(TEST_GROUP, "token");
+        verify(listener).onResumed(TEST_GROUP, "token");
         channel.removeGroup(TEST_GROUP);
         verify(listener).onGroupRemoved(TEST_GROUP);
     }
@@ -197,7 +204,7 @@ public class DefaultChannelOtherOperationsTest extends AbstractDefaultChannelTes
     @Test
     public void checkSetStorageSizeForwarding() {
 
-        /* The real Android test for checking size is in StorageHelperAndroidTest. */
+        /* The real Android test for checking size is in DatabaseManagerAndroidTest. */
         Persistence persistence = mock(Persistence.class);
         when(persistence.setMaxStorageSize(anyLong())).thenReturn(true).thenReturn(false);
         DefaultChannel channel = new DefaultChannel(mock(Context.class), UUIDUtils.randomUUID().toString(), persistence, mock(Ingestion.class), mAppCenterHandler);

@@ -18,24 +18,37 @@ import com.microsoft.appcenter.channel.Channel;
 import com.microsoft.appcenter.ingestion.Ingestion;
 import com.microsoft.appcenter.ingestion.models.Log;
 import com.microsoft.appcenter.ingestion.models.json.LogFactory;
+import com.microsoft.appcenter.ingestion.models.properties.BooleanTypedProperty;
+import com.microsoft.appcenter.ingestion.models.properties.DateTimeTypedProperty;
+import com.microsoft.appcenter.ingestion.models.properties.DoubleTypedProperty;
+import com.microsoft.appcenter.ingestion.models.properties.LongTypedProperty;
+import com.microsoft.appcenter.ingestion.models.properties.StringTypedProperty;
+import com.microsoft.appcenter.ingestion.models.properties.TypedProperty;
 import com.microsoft.appcenter.utils.AppCenterLog;
+import com.microsoft.appcenter.utils.UserIdContext;
 import com.microsoft.appcenter.utils.async.AppCenterConsumer;
-import com.microsoft.appcenter.utils.storage.StorageHelper;
+import com.microsoft.appcenter.utils.storage.SharedPreferencesManager;
 
+import org.junit.After;
 import org.junit.Assert;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatcher;
-import org.mockito.Mock;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
+import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
+import static com.microsoft.appcenter.Flags.DEFAULTS;
+import static com.microsoft.appcenter.Flags.PERSISTENCE_CRITICAL;
+import static com.microsoft.appcenter.Flags.PERSISTENCE_NORMAL;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -61,8 +74,10 @@ import static org.powermock.api.mockito.PowerMockito.verifyStatic;
 
 public class AnalyticsTest extends AbstractAnalyticsTest {
 
-    @Mock
-    private Channel mChannel;
+    @After
+    public void resetUserId() {
+        UserIdContext.unsetInstance();
+    }
 
     @Test
     public void singleton() {
@@ -91,11 +106,16 @@ public class AnalyticsTest extends AbstractAnalyticsTest {
         /* Just check log is discarded without throwing any exception. */
         Analytics.trackEvent("test");
         Analytics.trackEvent("test", new HashMap<String, String>());
+        Analytics.trackEvent("test", (Map<String, String>) null);
+        Analytics.trackEvent("test", (Map<String, String>) null, 0);
+        Analytics.trackEvent("test", (EventProperties) null);
+        Analytics.trackEvent("test", (EventProperties) null, 0);
         Analytics.trackPage("test");
         Analytics.trackPage("test", new HashMap<String, String>());
+        Analytics.trackPage("test", null);
 
         /* Verify we just get an error every time. */
-        verifyStatic(times(4));
+        verifyStatic(times(9));
         AppCenterLog.error(eq(AppCenter.LOG_TAG), anyString());
     }
 
@@ -132,7 +152,7 @@ public class AnalyticsTest extends AbstractAnalyticsTest {
                 }
                 return false;
             }
-        }), eq(analytics.getGroupName()));
+        }), eq(analytics.getGroupName()), eq(DEFAULTS));
     }
 
     @Test
@@ -166,14 +186,14 @@ public class AnalyticsTest extends AbstractAnalyticsTest {
             public boolean matches(Object argument) {
                 return argument instanceof StartSessionLog;
             }
-        }), anyString());
+        }), anyString(), eq(DEFAULTS));
         verify(channel, never()).enqueue(argThat(new ArgumentMatcher<Log>() {
 
             @Override
             public boolean matches(Object argument) {
                 return argument instanceof PageLog;
             }
-        }), anyString());
+        }), anyString(), anyInt());
         Analytics.setAutoPageTrackingEnabled(true);
         assertTrue(Analytics.isAutoPageTrackingEnabled());
         analytics.onActivityResumed(new SomeScreen());
@@ -187,17 +207,210 @@ public class AnalyticsTest extends AbstractAnalyticsTest {
                 }
                 return false;
             }
-        }), eq(analytics.getGroupName()));
+        }), eq(analytics.getGroupName()), eq(DEFAULTS));
     }
 
     @Test
-    public void trackEventFromApp() {
+    public void trackEventFromAppWithoutProperties() {
+        Analytics analytics = Analytics.getInstance();
+        Channel channel = mock(Channel.class);
+        ArgumentCaptor<EventLog> argumentCaptor = ArgumentCaptor.forClass(EventLog.class);
+        analytics.onStarting(mAppCenterHandler);
+        analytics.onStarted(mock(Context.class), channel, "", null, true);
+
+        /* Send event without properties. */
+        Analytics.trackEvent("eventName");
+        verify(channel).enqueue(argumentCaptor.capture(), anyString(), eq(DEFAULTS));
+        assertNotNull(argumentCaptor.getValue());
+        assertEquals("eventName", argumentCaptor.getValue().getName());
+        assertNull(argumentCaptor.getValue().getTypedProperties());
+    }
+
+    @Test
+    public void trackEventFromAppWithNullMapProperty() {
+        Analytics analytics = Analytics.getInstance();
+        Channel channel = mock(Channel.class);
+        ArgumentCaptor<EventLog> argumentCaptor = ArgumentCaptor.forClass(EventLog.class);
+        analytics.onStarting(mAppCenterHandler);
+        analytics.onStarted(mock(Context.class), channel, "", null, true);
+
+        /* Send event with empty Map properties. */
+        Analytics.trackEvent("eventName", (Map<String, String>) null);
+        verify(channel).enqueue(argumentCaptor.capture(), anyString(), eq(DEFAULTS));
+        assertNotNull(argumentCaptor.getValue());
+        assertEquals("eventName", argumentCaptor.getValue().getName());
+        assertNull(argumentCaptor.getValue().getTypedProperties());
+    }
+
+    @Test
+    public void trackEventFromAppWithEmptyMapProperty() {
+        Analytics analytics = Analytics.getInstance();
+        Channel channel = mock(Channel.class);
+        ArgumentCaptor<EventLog> argumentCaptor = ArgumentCaptor.forClass(EventLog.class);
+        analytics.onStarting(mAppCenterHandler);
+        analytics.onStarted(mock(Context.class), channel, "", null, true);
+
+        /* Send event with empty Map properties. */
+        Analytics.trackEvent("eventName", new HashMap<String, String>());
+        verify(channel).enqueue(argumentCaptor.capture(), anyString(), eq(DEFAULTS));
+        assertNotNull(argumentCaptor.getValue());
+        assertEquals("eventName", argumentCaptor.getValue().getName());
+        assertEquals(Collections.emptyList(), argumentCaptor.getValue().getTypedProperties());
+    }
+
+    @Test
+    public void trackEventFromAppWithMapProperties() {
+        Analytics analytics = Analytics.getInstance();
+        Channel channel = mock(Channel.class);
+        ArgumentCaptor<EventLog> argumentCaptor = ArgumentCaptor.forClass(EventLog.class);
+        analytics.onStarting(mAppCenterHandler);
+        analytics.onStarted(mock(Context.class), channel, "", null, true);
+
+        /* Send event with non-empty Map properties. */
+        Analytics.trackEvent("eventName", new HashMap<String, String>() {{
+            put("name", "value");
+        }});
+        StringTypedProperty stringProperty = new StringTypedProperty();
+        stringProperty.setName("name");
+        stringProperty.setValue("value");
+        verify(channel).enqueue(argumentCaptor.capture(), anyString(), eq(DEFAULTS));
+        assertNotNull(argumentCaptor.getValue());
+        assertEquals("eventName", argumentCaptor.getValue().getName());
+        assertEquals(Collections.<TypedProperty>singletonList(stringProperty), argumentCaptor.getValue().getTypedProperties());
+    }
+
+    @Test
+    public void trackEventFromAppWithEmptyEventProperties() {
+        Analytics analytics = Analytics.getInstance();
+        Channel channel = mock(Channel.class);
+        ArgumentCaptor<EventLog> argumentCaptor = ArgumentCaptor.forClass(EventLog.class);
+        analytics.onStarting(mAppCenterHandler);
+        analytics.onStarted(mock(Context.class), channel, "", null, true);
+
+        /* Send event with empty EventProperties. */
+        Analytics.trackEvent("eventName", new EventProperties());
+        verify(channel).enqueue(argumentCaptor.capture(), anyString(), eq(DEFAULTS));
+        assertNotNull(argumentCaptor.getValue());
+        assertEquals("eventName", argumentCaptor.getValue().getName());
+        assertEquals(Collections.emptyList(), argumentCaptor.getValue().getTypedProperties());
+    }
+
+    @Test
+    public void trackEventFromAppWithEventProperties() {
+        Analytics analytics = Analytics.getInstance();
+        Channel channel = mock(Channel.class);
+        ArgumentCaptor<EventLog> argumentCaptor = ArgumentCaptor.forClass(EventLog.class);
+        analytics.onStarting(mAppCenterHandler);
+        analytics.onStarted(mock(Context.class), channel, "", null, true);
+
+        /* Prepare typed properties. */
+        Date date = new Date();
+        StringTypedProperty stringTypedProperty = new StringTypedProperty();
+        stringTypedProperty.setName("n0");
+        stringTypedProperty.setValue("value");
+        DateTimeTypedProperty dateTimeTypedProperty = new DateTimeTypedProperty();
+        dateTimeTypedProperty.setName("n1");
+        dateTimeTypedProperty.setValue(date);
+        LongTypedProperty longTypedProperty = new LongTypedProperty();
+        longTypedProperty.setName("n2");
+        longTypedProperty.setValue(0);
+        DoubleTypedProperty doubleTypedProperty = new DoubleTypedProperty();
+        doubleTypedProperty.setName("n3");
+        doubleTypedProperty.setValue(0);
+        BooleanTypedProperty booleanTypedProperty = new BooleanTypedProperty();
+        booleanTypedProperty.setName("n4");
+        booleanTypedProperty.setValue(true);
+
+        /* Send event with non-empty EventProperties. */
+        EventProperties eventProperties = new EventProperties();
+        eventProperties.set("n0", "value");
+        eventProperties.set("n1", date);
+        eventProperties.set("n2", 0L);
+        eventProperties.set("n3", 0d);
+        eventProperties.set("n4", true);
+        Analytics.trackEvent("eventName", eventProperties);
+        verify(channel).enqueue(argumentCaptor.capture(), anyString(), eq(DEFAULTS));
+        assertNotNull(argumentCaptor.getValue());
+        assertEquals("eventName", argumentCaptor.getValue().getName());
+        assertEquals(stringTypedProperty, argumentCaptor.getValue().getTypedProperties().get(0));
+        assertEquals(dateTimeTypedProperty, argumentCaptor.getValue().getTypedProperties().get(1));
+        assertEquals(longTypedProperty, argumentCaptor.getValue().getTypedProperties().get(2));
+        assertEquals(doubleTypedProperty, argumentCaptor.getValue().getTypedProperties().get(3));
+        assertEquals(booleanTypedProperty, argumentCaptor.getValue().getTypedProperties().get(4));
+    }
+
+    @Test
+    public void trackEventWithNormalPersistenceFlag() {
         Analytics analytics = Analytics.getInstance();
         Channel channel = mock(Channel.class);
         analytics.onStarting(mAppCenterHandler);
         analytics.onStarted(mock(Context.class), channel, "", null, true);
-        Analytics.trackEvent("eventName");
-        verify(channel).enqueue(isA(EventLog.class), anyString());
+        Analytics.trackEvent("eventName1", (Map<String, String>) null, PERSISTENCE_NORMAL);
+        Analytics.trackEvent("eventName2", (EventProperties) null, PERSISTENCE_NORMAL);
+        verify(channel, times(2)).enqueue(isA(EventLog.class), anyString(), eq(PERSISTENCE_NORMAL));
+    }
+
+    @Test
+    public void trackEventWithNormalCriticalPersistenceFlag() {
+        Analytics analytics = Analytics.getInstance();
+        Channel channel = mock(Channel.class);
+        analytics.onStarting(mAppCenterHandler);
+        analytics.onStarted(mock(Context.class), channel, "", null, true);
+        Analytics.trackEvent("eventName1", (Map<String, String>) null, PERSISTENCE_CRITICAL);
+        Analytics.trackEvent("eventName2", (EventProperties) null, PERSISTENCE_CRITICAL);
+        verify(channel, times(2)).enqueue(isA(EventLog.class), anyString(), eq(PERSISTENCE_CRITICAL));
+    }
+
+    @Test
+    public void trackEventWithInvalidFlags() {
+        Analytics analytics = Analytics.getInstance();
+        Channel channel = mock(Channel.class);
+        analytics.onStarting(mAppCenterHandler);
+        analytics.onStarted(mock(Context.class), channel, "", null, true);
+        Analytics.trackEvent("eventName1", (Map<String, String>) null, 0x03);
+        Analytics.trackEvent("eventName2", (EventProperties) null, 0x03);
+        verify(channel, times(2)).enqueue(isA(EventLog.class), anyString(), eq(DEFAULTS));
+        verifyStatic(times(2));
+        AppCenterLog.warn(eq(AppCenter.LOG_TAG), anyString());
+    }
+
+    @Test
+    public void trackEventWithUserIdWhenConfiguredForTarget() {
+        UserIdContext.getInstance().setUserId("c:alice");
+        Analytics analytics = Analytics.getInstance();
+        Channel channel = mock(Channel.class);
+        analytics.onStarting(mAppCenterHandler);
+        analytics.onStarted(mock(Context.class), channel, null, "target", true);
+        Analytics.trackEvent("eventName1");
+        ArgumentCaptor<EventLog> eventLogArgumentCaptor = ArgumentCaptor.forClass(EventLog.class);
+        verify(channel).enqueue(eventLogArgumentCaptor.capture(), anyString(), eq(DEFAULTS));
+        assertEquals("c:alice", eventLogArgumentCaptor.getValue().getUserId());
+    }
+
+    @Test
+    public void trackEventWithoutUserIdWhenConfiguredForAppSecretOnly() {
+        UserIdContext.getInstance().setUserId("alice");
+        Analytics analytics = Analytics.getInstance();
+        Channel channel = mock(Channel.class);
+        analytics.onStarting(mAppCenterHandler);
+        analytics.onStarted(mock(Context.class), channel, "appSecret", null, true);
+        Analytics.trackEvent("eventName1");
+        ArgumentCaptor<EventLog> eventLogArgumentCaptor = ArgumentCaptor.forClass(EventLog.class);
+        verify(channel).enqueue(eventLogArgumentCaptor.capture(), anyString(), eq(DEFAULTS));
+        assertNull(eventLogArgumentCaptor.getValue().getUserId());
+    }
+
+    @Test
+    public void trackEventWithoutUserIdWhenConfiguredForBothSecrets() {
+        UserIdContext.getInstance().setUserId("c:alice");
+        Analytics analytics = Analytics.getInstance();
+        Channel channel = mock(Channel.class);
+        analytics.onStarting(mAppCenterHandler);
+        analytics.onStarted(mock(Context.class), channel, "appSecret", "target", true);
+        Analytics.trackEvent("eventName1");
+        ArgumentCaptor<EventLog> eventLogArgumentCaptor = ArgumentCaptor.forClass(EventLog.class);
+        verify(channel).enqueue(eventLogArgumentCaptor.capture(), anyString(), eq(DEFAULTS));
+        assertEquals("c:alice", eventLogArgumentCaptor.getValue().getUserId());
     }
 
     @Test
@@ -209,16 +422,16 @@ public class AnalyticsTest extends AbstractAnalyticsTest {
 
         /* Static track call forbidden if app didn't start Analytics. */
         Analytics.trackEvent("eventName");
-        verify(channel, never()).enqueue(isA(EventLog.class), anyString());
+        verify(channel, never()).enqueue(isA(EventLog.class), anyString(), anyInt());
 
         /* It works from a target. */
         AnalyticsTransmissionTarget target = Analytics.getTransmissionTarget("t");
         target.trackEvent("eventName");
-        verify(channel).enqueue(isA(EventLog.class), anyString());
+        verify(channel).enqueue(isA(EventLog.class), anyString(), eq(DEFAULTS));
 
         /* It works from a child target. */
         target.getTransmissionTarget("t2").trackEvent("eventName");
-        verify(channel, times(2)).enqueue(isA(EventLog.class), anyString());
+        verify(channel, times(2)).enqueue(isA(EventLog.class), anyString(), eq(DEFAULTS));
     }
 
     @Test
@@ -228,7 +441,7 @@ public class AnalyticsTest extends AbstractAnalyticsTest {
         analytics.onStarting(mAppCenterHandler);
         analytics.onStarted(mock(Context.class), channel, "", null, true);
         Analytics.trackPage("pageName");
-        verify(channel).enqueue(isA(PageLog.class), anyString());
+        verify(channel).enqueue(isA(PageLog.class), anyString(), eq(DEFAULTS));
     }
 
     @Test
@@ -240,7 +453,7 @@ public class AnalyticsTest extends AbstractAnalyticsTest {
 
         /* Page tracking does not work from library. */
         Analytics.trackPage("pageName");
-        verify(channel, never()).enqueue(isA(PageLog.class), anyString());
+        verify(channel, never()).enqueue(isA(PageLog.class), anyString(), anyInt());
     }
 
     @Test
@@ -275,7 +488,7 @@ public class AnalyticsTest extends AbstractAnalyticsTest {
         verify(channel, times(2)).removeGroup(analytics.getGroupName());
         verify(channel).clear(analytics.getGroupName());
         verifyStatic();
-        StorageHelper.PreferencesStorage.remove("sessions");
+        SharedPreferencesManager.remove("sessions");
 
         /* Now try to use all methods. Should not work. */
         Analytics.trackEvent("test");
@@ -284,7 +497,7 @@ public class AnalyticsTest extends AbstractAnalyticsTest {
         Analytics.trackPage("test");
         analytics.onActivityResumed(new Activity());
         analytics.onActivityPaused(new Activity());
-        verify(channel, never()).enqueue(any(Log.class), eq(analytics.getGroupName()));
+        verify(channel, never()).enqueue(any(Log.class), eq(analytics.getGroupName()), anyInt());
 
         /* Enable again, verify the async behavior of setEnabled with the callback. */
         final CountDownLatch latch = new CountDownLatch(1);
@@ -305,7 +518,7 @@ public class AnalyticsTest extends AbstractAnalyticsTest {
         target.trackEvent("test");
         target.getTransmissionTarget("t2").trackEvent("test");
         Analytics.trackPage("test");
-        verify(channel, times(4)).enqueue(any(Log.class), eq(analytics.getGroupName()));
+        verify(channel, times(4)).enqueue(any(Log.class), eq(analytics.getGroupName()), eq(DEFAULTS));
 
         /* Disable again. */
         Analytics.setEnabled(false);
@@ -316,12 +529,12 @@ public class AnalyticsTest extends AbstractAnalyticsTest {
         analytics.onActivityPaused(new Activity());
 
         /* No more log enqueued. */
-        verify(channel, times(4)).enqueue(any(Log.class), eq(analytics.getGroupName()));
+        verify(channel, times(4)).enqueue(any(Log.class), eq(analytics.getGroupName()), eq(DEFAULTS));
     }
 
     @Test
     public void disablePersisted() {
-        when(StorageHelper.PreferencesStorage.getBoolean(ANALYTICS_ENABLED_KEY, true)).thenReturn(false);
+        when(SharedPreferencesManager.getBoolean(ANALYTICS_ENABLED_KEY, true)).thenReturn(false);
         Analytics analytics = Analytics.getInstance();
 
         /* Start. */
@@ -347,26 +560,26 @@ public class AnalyticsTest extends AbstractAnalyticsTest {
         verify(channel).addListener(isA(AnalyticsValidator.class));
 
         /* Pause Analytics. */
-        Analytics.pause().get();
+        Analytics.pause();
 
         /* Check if Analytics group is paused. */
-        verify(channel).pauseGroup(eq(analytics.getGroupName()));
+        verify(channel).pauseGroup(analytics.getGroupName(), null);
 
         /* Send logs to verify the logs are enqueued after pause. */
         Analytics.trackEvent("test");
         Analytics.trackPage("test");
-        verify(channel, times(2)).enqueue(any(Log.class), eq(analytics.getGroupName()));
+        verify(channel, times(2)).enqueue(any(Log.class), eq(analytics.getGroupName()), eq(DEFAULTS));
 
         /* Resume Analytics. */
-        Analytics.resume().get();
+        Analytics.resume();
 
         /* Check if Analytics group is resumed. */
-        verify(channel).resumeGroup(eq(analytics.getGroupName()));
+        verify(channel).resumeGroup(analytics.getGroupName(), null);
 
         /* Send logs to verify the logs are enqueued after resume. */
         Analytics.trackEvent("test");
         Analytics.trackPage("test");
-        verify(channel, times(4)).enqueue(any(Log.class), eq(analytics.getGroupName()));
+        verify(channel, times(4)).enqueue(any(Log.class), eq(analytics.getGroupName()), eq(DEFAULTS));
     }
 
     @Test
@@ -385,26 +598,26 @@ public class AnalyticsTest extends AbstractAnalyticsTest {
 
         /* Disable and pause Analytics. */
         Analytics.setEnabled(false);
-        Analytics.pause().get();
+        Analytics.pause();
 
         /* Check if Analytics group is paused even while disabled. */
-        verify(channel, never()).pauseGroup(eq(analytics.getGroupName()));
+        verify(channel, never()).pauseGroup(analytics.getGroupName(), null);
 
         /* Send logs to verify the logs are enqueued after pause. */
         Analytics.trackEvent("test");
         Analytics.trackPage("test");
-        verify(channel, never()).enqueue(any(Log.class), eq(analytics.getGroupName()));
+        verify(channel, never()).enqueue(any(Log.class), eq(analytics.getGroupName()), anyInt());
 
         /* Resume Analytics. */
-        Analytics.resume().get();
+        Analytics.resume();
 
         /* Check if Analytics group is resumed even while paused. */
-        verify(channel, never()).resumeGroup(eq(analytics.getGroupName()));
+        verify(channel, never()).resumeGroup(analytics.getGroupName(), null);
 
         /* Send logs to verify the logs are enqueued after resume. */
         Analytics.trackEvent("test");
         Analytics.trackPage("test");
-        verify(channel, never()).enqueue(any(Log.class), eq(analytics.getGroupName()));
+        verify(channel, never()).enqueue(any(Log.class), eq(analytics.getGroupName()), anyInt());
     }
 
     @Test
@@ -422,7 +635,7 @@ public class AnalyticsTest extends AbstractAnalyticsTest {
 
         /* App in foreground: no log yet, we are disabled. */
         analytics.onActivityResumed(new Activity());
-        verify(channel, never()).enqueue(any(Log.class), eq(analytics.getGroupName()));
+        verify(channel, never()).enqueue(any(Log.class), eq(analytics.getGroupName()), anyInt());
 
         /* Enable: start session sent retroactively. */
         Analytics.setEnabled(true);
@@ -432,14 +645,14 @@ public class AnalyticsTest extends AbstractAnalyticsTest {
             public boolean matches(Object argument) {
                 return argument instanceof StartSessionLog;
             }
-        }), eq(analytics.getGroupName()));
+        }), eq(analytics.getGroupName()), eq(DEFAULTS));
         verify(channel).enqueue(argThat(new ArgumentMatcher<Log>() {
 
             @Override
             public boolean matches(Object argument) {
                 return argument instanceof PageLog;
             }
-        }), eq(analytics.getGroupName()));
+        }), eq(analytics.getGroupName()), eq(DEFAULTS));
 
         /* Go background. */
         analytics.onActivityPaused(new Activity());
@@ -449,7 +662,7 @@ public class AnalyticsTest extends AbstractAnalyticsTest {
         Analytics.setEnabled(true);
 
         /* No additional log. */
-        verify(channel, times(2)).enqueue(any(Log.class), eq(analytics.getGroupName()));
+        verify(channel, times(2)).enqueue(any(Log.class), eq(analytics.getGroupName()), eq(DEFAULTS));
     }
 
     @Test
@@ -468,11 +681,11 @@ public class AnalyticsTest extends AbstractAnalyticsTest {
         /* App in foreground: no log yet, we are disabled. */
         analytics.onActivityResumed(new Activity());
         analytics.getCurrentActivity().clear();
-        verify(channel, never()).enqueue(any(Log.class), eq(analytics.getGroupName()));
+        verify(channel, never()).enqueue(any(Log.class), eq(analytics.getGroupName()), anyInt());
 
         /* Enable: start session not sent retroactively, weak reference lost. */
         Analytics.setEnabled(true);
-        verify(channel, never()).enqueue(any(Log.class), eq(analytics.getGroupName()));
+        verify(channel, never()).enqueue(any(Log.class), eq(analytics.getGroupName()), anyInt());
     }
 
     @Test
@@ -494,7 +707,7 @@ public class AnalyticsTest extends AbstractAnalyticsTest {
                 captor.getValue().onFailure((Log) invocation.getArguments()[0], new Exception());
                 return null;
             }
-        }).when(channel).enqueue(any(Log.class), anyString());
+        }).when(channel).enqueue(any(Log.class), anyString(), anyInt());
         Analytics.trackEvent("name");
         verify(listener).onBeforeSending(notNull(Log.class));
         verify(listener).onSendingSucceeded(notNull(Log.class));
@@ -536,22 +749,22 @@ public class AnalyticsTest extends AbstractAnalyticsTest {
         analytics.onActivityResumed(activity);
         analytics.onActivityPaused(activity);
         analytics.onActivityResumed(new MyActivity());
-        verify(channel, never()).enqueue(isA(StartSessionLog.class), eq(analytics.getGroupName()));
-        verify(channel, never()).enqueue(isA(PageLog.class), eq(analytics.getGroupName()));
+        verify(channel, never()).enqueue(isA(StartSessionLog.class), eq(analytics.getGroupName()), anyInt());
+        verify(channel, never()).enqueue(isA(PageLog.class), eq(analytics.getGroupName()), anyInt());
 
         /* Even when switching states. */
         Analytics.setEnabled(false);
         Analytics.setEnabled(true);
         verify(channel, never()).addListener(isA(SessionTracker.class));
-        verify(channel, never()).enqueue(isA(StartSessionLog.class), eq(analytics.getGroupName()));
-        verify(channel, never()).enqueue(isA(PageLog.class), eq(analytics.getGroupName()));
+        verify(channel, never()).enqueue(isA(StartSessionLog.class), eq(analytics.getGroupName()), anyInt());
+        verify(channel, never()).enqueue(isA(PageLog.class), eq(analytics.getGroupName()), anyInt());
 
         /* Now start app, no secret needed. */
         analytics.onConfigurationUpdated(null, null);
 
         /* Session tracker is started now. */
         verify(channel).addListener(isA(SessionTracker.class));
-        verify(channel).enqueue(isA(StartSessionLog.class), anyString());
+        verify(channel).enqueue(isA(StartSessionLog.class), anyString(), eq(DEFAULTS));
 
         /* Verify last page tracked as still in foreground. */
         verify(channel).enqueue(argThat(new ArgumentMatcher<Log>() {
@@ -564,10 +777,10 @@ public class AnalyticsTest extends AbstractAnalyticsTest {
                 }
                 return false;
             }
-        }), eq(analytics.getGroupName()));
+        }), eq(analytics.getGroupName()), eq(DEFAULTS));
 
         /* Check that was the only page sent. */
-        verify(channel).enqueue(isA(PageLog.class), eq(analytics.getGroupName()));
+        verify(channel).enqueue(isA(PageLog.class), eq(analytics.getGroupName()), eq(DEFAULTS));
 
         /* Session tracker removed if disabled. */
         Analytics.setEnabled(false);
@@ -576,8 +789,8 @@ public class AnalyticsTest extends AbstractAnalyticsTest {
         /* And added again on enabling again. Page tracked again. */
         Analytics.setEnabled(true);
         verify(channel, times(2)).addListener(isA(SessionTracker.class));
-        verify(channel, times(2)).enqueue(isA(StartSessionLog.class), eq(analytics.getGroupName()));
-        verify(channel, times(2)).enqueue(isA(PageLog.class), eq(analytics.getGroupName()));
+        verify(channel, times(2)).enqueue(isA(StartSessionLog.class), eq(analytics.getGroupName()), eq(DEFAULTS));
+        verify(channel, times(2)).enqueue(isA(PageLog.class), eq(analytics.getGroupName()), eq(DEFAULTS));
     }
 
     @Test

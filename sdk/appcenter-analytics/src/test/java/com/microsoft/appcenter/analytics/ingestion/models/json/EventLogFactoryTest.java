@@ -4,19 +4,24 @@ import com.microsoft.appcenter.analytics.ingestion.models.EventLog;
 import com.microsoft.appcenter.analytics.ingestion.models.one.json.CommonSchemaEventLogFactory;
 import com.microsoft.appcenter.ingestion.models.one.CommonSchemaLog;
 import com.microsoft.appcenter.ingestion.models.one.PartAUtils;
-import com.microsoft.appcenter.ingestion.models.one.PartCUtils;
+import com.microsoft.appcenter.ingestion.models.one.CommonSchemaDataUtils;
+import com.microsoft.appcenter.ingestion.models.properties.StringTypedProperty;
+import com.microsoft.appcenter.ingestion.models.properties.TypedProperty;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.powermock.core.classloader.annotations.PrepareForTest;
 import org.powermock.modules.junit4.PowerMockRunner;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertSame;
 import static org.mockito.Matchers.eq;
 import static org.mockito.Matchers.notNull;
 import static org.mockito.Matchers.same;
@@ -46,30 +51,54 @@ public class EventLogFactoryTest {
     }
 
     @Test
-    @PrepareForTest({PartAUtils.class, PartCUtils.class})
+    @PrepareForTest({PartAUtils.class, CommonSchemaDataUtils.class})
     public void convertEventWithoutProperties() {
 
         /* Mock utilities. */
         mockStatic(PartAUtils.class);
+        mockStatic(CommonSchemaDataUtils.class);
 
         /* Create event log. */
         EventLog log = new EventLog();
         log.setName("test");
-        Map<String, String> properties = new HashMap<>();
-        properties.put("a", "b");
-        log.setProperties(properties);
+
+        /* Old properties are ignored. */
+        Map<String, String> oldProperties = new HashMap<>();
+        oldProperties.put("ignored", "ignored");
+        log.setProperties(oldProperties);
+
+        /* Set typed properties. */
+        List<TypedProperty> properties = new ArrayList<>();
+        StringTypedProperty stringTypedProperty = new StringTypedProperty();
+        stringTypedProperty.setName("a");
+        stringTypedProperty.setValue("b");
+        properties.add(stringTypedProperty);
+        log.setTypedProperties(properties);
 
         /* With 2 targets. */
         log.addTransmissionTarget("t1");
         log.addTransmissionTarget("t2");
+
+        /* And with a tag. */
+        Object tag = new Object();
+        log.setTag(tag);
+
+        /* When we convert logs. */
         Collection<CommonSchemaLog> convertedLogs = new EventLogFactory().toCommonSchemaLogs(log);
+
+        /* Check number of logs: 1 per target. */
         assertNotNull(convertedLogs);
         assertEquals(2, convertedLogs.size());
 
-        /* Check name was added. */
+        /* For each target. */
         for (CommonSchemaLog commonSchemaLog : convertedLogs) {
+
+            /* Check name was added. */
             verifyStatic();
             PartAUtils.setName(same(commonSchemaLog), eq("test"));
+
+            /* Check tag was added. */
+            assertSame(tag, commonSchemaLog.getTag());
         }
 
         /* Check Part A was added with target tokens. */
@@ -78,8 +107,8 @@ public class EventLogFactoryTest {
         verifyStatic();
         PartAUtils.addPartAFromLog(eq(log), notNull(CommonSchemaLog.class), eq("t2"));
 
-        /* Check Part C was added. */
+        /* Check data was added with typed properties (and thus not old ones). */
         verifyStatic(times(2));
-        PartCUtils.addPartCFromLog(eq(log.getProperties()), notNull(CommonSchemaLog.class));
+        CommonSchemaDataUtils.addCommonSchemaData(eq(properties), notNull(CommonSchemaLog.class));
     }
 }

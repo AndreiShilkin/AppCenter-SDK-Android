@@ -56,6 +56,20 @@ public interface Log extends Model {
     void setDistributionGroupId(String distributionGroupId);
 
     /**
+     * Get the userId value.
+     *
+     * @return the userId value.
+     */
+    String getUserId();
+
+    /**
+     * Set the userId value.
+     *
+     * @param userId the userId value to set.
+     */
+    void setUserId(String userId);
+
+    /**
      * Get the device value.
      *
      * @return the device value
@@ -85,4 +99,18 @@ public interface Log extends Model {
      */
     @SuppressWarnings("unused")
     Set<String> getTransmissionTargetTokens();
+
+    /**
+     * Get internal tag for this log.
+     *
+     * @return internal tag or null.
+     */
+    Object getTag();
+
+    /**
+     * Set internal tag for this log.
+     *
+     * @param tag tag object or null to reset tag.
+     */
+    void setTag(Object tag);
 }

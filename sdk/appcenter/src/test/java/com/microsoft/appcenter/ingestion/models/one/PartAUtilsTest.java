@@ -1,5 +1,7 @@
 package com.microsoft.appcenter.ingestion.models.one;
 
+import android.support.annotation.NonNull;
+
 import com.microsoft.appcenter.ingestion.models.Device;
 import com.microsoft.appcenter.ingestion.models.Log;
 
@@ -17,11 +19,6 @@ import static org.mockito.Mockito.when;
 
 public class PartAUtilsTest {
 
-    @Test
-    public void coverInit() {
-        new PartAUtils();
-    }
-
     private static void testInvalidName(String name) {
         CommonSchemaLog log = new MockCommonSchemaLog();
         try {
@@ -36,6 +33,11 @@ public class PartAUtilsTest {
         CommonSchemaLog log = new MockCommonSchemaLog();
         PartAUtils.setName(log, name);
         assertEquals(name, log.getName());
+    }
+
+    @Test
+    public void coverInit() {
+        new PartAUtils();
     }
 
     @Test
@@ -68,10 +70,64 @@ public class PartAUtilsTest {
         checkPartAConversion(-480, "-08:00");
     }
 
+    @Test
+    public void checkPartAConversionDoesNotInstantiateExtensionObjectAgain() {
+        Log log = mock(Log.class);
+        when(log.getDevice()).thenReturn(getDevice(0));
+        MockCommonSchemaLog commonSchemaLog = new MockCommonSchemaLog();
+        Extensions extensions = new Extensions();
+        commonSchemaLog.setExt(extensions);
+        PartAUtils.addPartAFromLog(log, commonSchemaLog, "T1UUID1-T2UUID2");
+        assertEquals(extensions, commonSchemaLog.getExt());
+    }
+
     /**
      * Convert to Part A and check.
      */
     private void checkPartAConversion(int appCenterTimeZoneOffset, String commonSchemaTimeZoneOffset) {
+        Device device = getDevice(appCenterTimeZoneOffset);
+
+        /* App Center timestamp and transmission targets. */
+        Date timestamp = new Date();
+        String transmissionTarget = "T1UUID1-T2UUID2";
+        Log log = mock(Log.class);
+        when(log.getDevice()).thenReturn(device);
+        when(log.getTimestamp()).thenReturn(timestamp);
+        when(log.getUserId()).thenReturn("alice");
+
+        /* Convert. */
+        MockCommonSchemaLog commonSchemaLog = new MockCommonSchemaLog();
+        PartAUtils.addPartAFromLog(log, commonSchemaLog, transmissionTarget);
+
+        /* Verify conversion. */
+        assertEquals("3.0", commonSchemaLog.getVer());
+        assertEquals(timestamp, commonSchemaLog.getTimestamp());
+        assertEquals("o:T1UUID1", commonSchemaLog.getIKey());
+        assertNotNull(commonSchemaLog.getExt());
+        assertNotNull(commonSchemaLog.getExt().getProtocol());
+        assertEquals("model", commonSchemaLog.getExt().getProtocol().getDevModel());
+        assertEquals("oemName", commonSchemaLog.getExt().getProtocol().getDevMake());
+        assertNotNull(commonSchemaLog.getExt().getUser());
+        assertEquals("c:alice", commonSchemaLog.getExt().getUser().getLocalId());
+        assertEquals("en-US", commonSchemaLog.getExt().getUser().getLocale());
+        assertNotNull(commonSchemaLog.getExt().getOs());
+        assertEquals("osName", commonSchemaLog.getExt().getOs().getName());
+        assertEquals("8.1.0-ABC.123-23", commonSchemaLog.getExt().getOs().getVer());
+        assertNotNull(commonSchemaLog.getExt().getApp());
+        assertEquals("1.0.0", commonSchemaLog.getExt().getApp().getVer());
+        assertEquals("a:com.appcenter.test", commonSchemaLog.getExt().getApp().getId());
+        assertNotNull(commonSchemaLog.getExt().getNet());
+        assertEquals("carrierName", commonSchemaLog.getExt().getNet().getProvider());
+        assertNotNull(commonSchemaLog.getExt().getSdk());
+        assertEquals("appcenter.android-1.5.0", commonSchemaLog.getExt().getSdk().getLibVer());
+        assertNotNull(commonSchemaLog.getExt().getLoc());
+        assertEquals(commonSchemaTimeZoneOffset, commonSchemaLog.getExt().getLoc().getTz());
+        assertEquals(Collections.singleton(transmissionTarget), commonSchemaLog.getTransmissionTargetTokens());
+        assertNotNull(commonSchemaLog.getExt().getDevice());
+    }
+
+    @NonNull
+    private Device getDevice(int appCenterTimeZoneOffset) {
 
         /* Create App Center models, starting with the device object. */
         Device device = new Device();
@@ -88,41 +144,6 @@ public class PartAUtilsTest {
         device.setSdkName("appcenter.android");
         device.setSdkVersion("1.5.0");
         device.setTimeZoneOffset(appCenterTimeZoneOffset);
-
-        /* App Center timestamp and transmission targets. */
-        Date timestamp = new Date();
-        String transmissionTarget = "T1UUID1-T2UUID2";
-        Log log = mock(Log.class);
-        when(log.getDevice()).thenReturn(device);
-        when(log.getTimestamp()).thenReturn(timestamp);
-
-        /* Convert. */
-        MockCommonSchemaLog commonSchemaLog = new MockCommonSchemaLog();
-        PartAUtils.addPartAFromLog(log, commonSchemaLog, transmissionTarget);
-
-        /* Verify conversion. */
-        assertEquals("3.0", commonSchemaLog.getVer());
-        assertEquals(timestamp, commonSchemaLog.getTimestamp());
-        assertEquals("o:T1UUID1", commonSchemaLog.getIKey());
-        assertNotNull(commonSchemaLog.getExt());
-        assertNotNull(commonSchemaLog.getExt().getProtocol());
-        assertEquals("model", commonSchemaLog.getExt().getProtocol().getDevModel());
-        assertEquals("oemName", commonSchemaLog.getExt().getProtocol().getDevMake());
-        assertNotNull(commonSchemaLog.getExt().getUser());
-        assertEquals("en-US", commonSchemaLog.getExt().getUser().getLocale());
-        assertNotNull(commonSchemaLog.getExt().getOs());
-        assertEquals("osName", commonSchemaLog.getExt().getOs().getName());
-        assertEquals("8.1.0-ABC.123-23", commonSchemaLog.getExt().getOs().getVer());
-        assertNotNull(commonSchemaLog.getExt().getApp());
-        assertEquals("1.0.0", commonSchemaLog.getExt().getApp().getVer());
-        assertEquals("a:com.appcenter.test", commonSchemaLog.getExt().getApp().getId());
-        assertNotNull(commonSchemaLog.getExt().getNet());
-        assertEquals("carrierName", commonSchemaLog.getExt().getNet().getProvider());
-        assertNotNull(commonSchemaLog.getExt().getSdk());
-        assertEquals("appcenter.android-1.5.0", commonSchemaLog.getExt().getSdk().getLibVer());
-        assertNotNull(commonSchemaLog.getExt().getLoc());
-        assertEquals(commonSchemaTimeZoneOffset, commonSchemaLog.getExt().getLoc().getTz());
-        assertEquals(Collections.singleton(transmissionTarget), commonSchemaLog.getTransmissionTargetTokens());
-        assertNotNull(commonSchemaLog.getExt().getDevice());
+        return device;
     }
 }

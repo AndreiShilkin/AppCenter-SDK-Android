@@ -2,35 +2,47 @@ package com.microsoft.appcenter.sasquatch.activities;
 
 import android.content.Intent;
 import android.os.Bundle;
+import android.support.v4.app.FragmentTransaction;
+import android.support.v7.app.AppCompatActivity;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
+import android.widget.SeekBar;
 import android.widget.Spinner;
+import android.widget.TextView;
 
 import com.microsoft.appcenter.AppCenter;
+import com.microsoft.appcenter.Flags;
 import com.microsoft.appcenter.analytics.Analytics;
 import com.microsoft.appcenter.analytics.AnalyticsTransmissionTarget;
-import com.microsoft.appcenter.analytics.PropertyConfigurator;
+import com.microsoft.appcenter.analytics.EventProperties;
 import com.microsoft.appcenter.sasquatch.R;
+import com.microsoft.appcenter.sasquatch.fragments.TypedPropertyFragment;
 import com.microsoft.appcenter.sasquatch.util.EventActivityUtil;
 
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-public class EventActivity extends LogActivity {
+
+public class EventActivity extends AppCompatActivity {
 
     /**
      * Remember for what targets the device id was enabled.
      * It shouldn't be lost on recreate activity.
      */
-    private static Set<AnalyticsTransmissionTarget> DEVICE_ID_ENABLED = new HashSet<>();
+    private static final Set<AnalyticsTransmissionTarget> DEVICE_ID_ENABLED = new HashSet<>();
+
+    private final List<TypedPropertyFragment> mProperties = new ArrayList<>();
+
+    private TextView mName;
 
     private Spinner mTransmissionTargetSpinner;
 
@@ -42,14 +54,28 @@ public class EventActivity extends LogActivity {
 
     private Button mOverrideCommonSchemaButton;
 
+    private Button mPauseTransmissionButton;
+
+    private Button mResumeTransmissionButton;
+
+    private Spinner mPersistenceFlagSpinner;
+
+    private TextView mNumberOfLogsLabel;
+
+    private SeekBar mNumberOfLogs;
+
     private List<AnalyticsTransmissionTarget> mTransmissionTargets = new ArrayList<>();
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_event);
 
         /* Test start from library. */
         AppCenter.startFromLibrary(this, Analytics.class);
+
+        /* Init name field. */
+        mName = findViewById(R.id.name);
 
         /* Transmission target views init. */
         mTransmissionTargetSpinner = findViewById(R.id.transmission_target);
@@ -98,28 +124,170 @@ public class EventActivity extends LogActivity {
 
             @Override
             public void onClick(View v) {
-                final Intent intent = new Intent(EventActivity.this, CommonSchemaPropertiesActivity.class);
+                Intent intent = new Intent(EventActivity.this, CommonSchemaPropertiesActivity.class);
                 intent.putExtra(ActivityConstants.EXTRA_TARGET_SELECTED, mTransmissionTargetSpinner.getSelectedItemPosition());
                 startActivity(intent);
+            }
+        });
+
+        /* Init pause/resume buttons. */
+        mPauseTransmissionButton = findViewById(R.id.pause_transmission_button);
+        mPauseTransmissionButton.setOnClickListener(new View.OnClickListener() {
+
+            @Override
+            @SuppressWarnings("ConstantConditions")
+            public void onClick(View v) {
+                getSelectedTarget().pause();
+            }
+        });
+        mResumeTransmissionButton = findViewById(R.id.resume_transmission_button);
+        mResumeTransmissionButton.setOnClickListener(new View.OnClickListener() {
+
+            @Override
+            @SuppressWarnings("ConstantConditions")
+            public void onClick(View v) {
+                getSelectedTarget().resume();
+            }
+        });
+
+        /* Persistence flag. */
+        mPersistenceFlagSpinner = findViewById(R.id.event_priority_spinner);
+        ArrayAdapter<String> persistenceFlagAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, getResources().getStringArray(R.array.event_priority_values));
+        mPersistenceFlagSpinner.setAdapter(persistenceFlagAdapter);
+
+        /* Number of logs. */
+        mNumberOfLogsLabel = findViewById(R.id.number_of_logs_label);
+        mNumberOfLogs = findViewById(R.id.number_of_logs);
+        mNumberOfLogsLabel.setText(String.format(getString(R.string.number_of_logs), getNumberOfLogs()));
+        mNumberOfLogs.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                mNumberOfLogsLabel.setText(String.format(getString(R.string.number_of_logs), getNumberOfLogs()));
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
             }
         });
     }
 
     @Override
-    int getLayoutId() {
-        return R.layout.activity_event;
+    public boolean onCreateOptionsMenu(Menu menu) {
+        getMenuInflater().inflate(R.menu.add, menu);
+        return true;
     }
 
     @Override
-    void trackLog(String name, Map<String, String> properties) {
-
-        /* First item is always empty as it's default value which means either appcenter, one collector or both. */
-        AnalyticsTransmissionTarget target = getSelectedTarget();
-        if (target == null) {
-            Analytics.trackEvent(name, properties);
-        } else {
-            target.trackEvent(name, properties);
+    public boolean onOptionsItemSelected(MenuItem item) {
+        switch (item.getItemId()) {
+            case R.id.action_add:
+                addProperty();
+                break;
         }
+        return true;
+    }
+
+    private int getNumberOfLogs() {
+        return Math.max(mNumberOfLogs.getProgress(), 1);
+    }
+
+    private void addProperty() {
+        TypedPropertyFragment fragment = new TypedPropertyFragment();
+        FragmentTransaction transaction = getSupportFragmentManager().beginTransaction();
+        transaction.add(R.id.list, fragment).commit();
+        mProperties.add(fragment);
+    }
+
+    private boolean onlyStringProperties() {
+        for (TypedPropertyFragment fragment : mProperties) {
+            if (fragment.getType() != TypedPropertyFragment.EventPropertyType.STRING) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    @SuppressWarnings("unused")
+    public void send(@SuppressWarnings("UnusedParameters") View view) {
+        AnalyticsTransmissionTarget target = getSelectedTarget();
+        PersistenceFlag persistenceFlag = PersistenceFlag.values()[mPersistenceFlagSpinner.getSelectedItemPosition()];
+        int flags = getFlags(persistenceFlag);
+        String name = mName.getText().toString();
+        Map<String, String> properties = null;
+        EventProperties typedProperties = null;
+        if (mProperties.size() > 0) {
+            if (onlyStringProperties()) {
+                properties = new HashMap<>();
+                for (TypedPropertyFragment fragment : mProperties) {
+                    fragment.set(properties);
+                }
+            } else {
+                typedProperties = new EventProperties();
+                for (TypedPropertyFragment fragment : mProperties) {
+                    fragment.set(typedProperties);
+                }
+            }
+        }
+
+        /* First item is always empty as it's default value which means either AppCenter, one collector or both. */
+        for (int i = 0; i < getNumberOfLogs(); i++) {
+            boolean useExplicitFlags = persistenceFlag != PersistenceFlag.DEFAULT;
+            if (target == null) {
+                if (properties != null) {
+                    if (useExplicitFlags) {
+                        Analytics.trackEvent(name, properties, flags);
+                    } else {
+                        Analytics.trackEvent(name, properties);
+                    }
+                } else if (typedProperties != null || useExplicitFlags) {
+                    if (useExplicitFlags) {
+                        Analytics.trackEvent(name, typedProperties, flags);
+                    } else {
+                        Analytics.trackEvent(name, typedProperties);
+                    }
+                } else {
+                    Analytics.trackEvent(name);
+                }
+            } else {
+                if (properties != null) {
+                    if (useExplicitFlags) {
+                        target.trackEvent(name, properties, flags);
+                    } else {
+                        target.trackEvent(name, properties);
+                    }
+                } else if (typedProperties != null || useExplicitFlags) {
+                    if (useExplicitFlags) {
+                        target.trackEvent(name, typedProperties, flags);
+                    } else {
+                        target.trackEvent(name, typedProperties);
+                    }
+                } else {
+                    target.trackEvent(name);
+                }
+            }
+        }
+    }
+
+    private int getFlags(PersistenceFlag persistenceFlag) {
+        switch (persistenceFlag) {
+            case DEFAULT:
+                return Flags.getPersistenceFlag(Flags.DEFAULTS, true);
+
+            case NORMAL:
+                return Flags.PERSISTENCE_NORMAL;
+
+            case CRITICAL:
+                return Flags.PERSISTENCE_CRITICAL;
+
+            case INVALID:
+                return 42;
+        }
+        throw new IllegalArgumentException();
     }
 
     private AnalyticsTransmissionTarget getSelectedTarget() {
@@ -139,22 +307,7 @@ public class EventActivity extends LogActivity {
         final AnalyticsTransmissionTarget target = getSelectedTarget();
         if (target != null) {
             updateButtonStates(target);
-
-            // TODO remove reflection once new APIs available in jCenter.
-            // target.getPropertyConfigurator().collectDeviceId();
-            {
-                Method method;
-                try {
-                    method = PropertyConfigurator.class.getMethod("collectDeviceId");
-                } catch (Exception ignored) {
-                    return;
-                }
-                try {
-                    method.invoke(target.getPropertyConfigurator());
-                } catch (IllegalAccessException ignored) {
-                } catch (InvocationTargetException ignored) {
-                }
-            }
+            target.getPropertyConfigurator().collectDeviceId();
             mDeviceIdEnabledCheckBox.setChecked(true);
             mDeviceIdEnabledCheckBox.setText(R.string.device_id_enabled);
             mDeviceIdEnabledCheckBox.setEnabled(false);
@@ -168,27 +321,29 @@ public class EventActivity extends LogActivity {
             mConfigureTargetPropertiesButton.setVisibility(View.GONE);
             mOverrideCommonSchemaButton.setVisibility(View.GONE);
             mDeviceIdEnabledCheckBox.setVisibility(View.GONE);
+            mPauseTransmissionButton.setVisibility(View.GONE);
+            mResumeTransmissionButton.setVisibility(View.GONE);
         } else {
             mTransmissionEnabledCheckBox.setVisibility(View.VISIBLE);
             mConfigureTargetPropertiesButton.setVisibility(View.VISIBLE);
             mOverrideCommonSchemaButton.setVisibility(View.VISIBLE);
+            mPauseTransmissionButton.setVisibility(View.VISIBLE);
+            mResumeTransmissionButton.setVisibility(View.VISIBLE);
             boolean enabled = target.isEnabledAsync().get();
             mTransmissionEnabledCheckBox.setChecked(enabled);
             mTransmissionEnabledCheckBox.setText(enabled ? R.string.transmission_enabled : R.string.transmission_disabled);
-
-            // TODO remove reflection once new APIs available in jCenter.
-            {
-                try {
-                    PropertyConfigurator.class.getMethod("collectDeviceId");
-                } catch (Exception ignored) {
-                    return;
-                }
-            }
             boolean deviceIdEnabled = DEVICE_ID_ENABLED.contains(target);
             mDeviceIdEnabledCheckBox.setVisibility(View.VISIBLE);
             mDeviceIdEnabledCheckBox.setChecked(deviceIdEnabled);
             mDeviceIdEnabledCheckBox.setText(deviceIdEnabled ? R.string.device_id_enabled : R.string.device_id_disabled);
             mDeviceIdEnabledCheckBox.setEnabled(!deviceIdEnabled);
         }
+    }
+
+    private enum PersistenceFlag {
+        DEFAULT,
+        NORMAL,
+        CRITICAL,
+        INVALID
     }
 }

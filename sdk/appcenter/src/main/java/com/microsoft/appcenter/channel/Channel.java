@@ -1,9 +1,13 @@
 package com.microsoft.appcenter.channel;
 
+import android.support.annotation.IntRange;
 import android.support.annotation.NonNull;
 
 import com.microsoft.appcenter.ingestion.Ingestion;
 import com.microsoft.appcenter.ingestion.models.Log;
+
+import static com.microsoft.appcenter.Flags.PERSISTENCE_CRITICAL;
+import static com.microsoft.appcenter.Flags.PERSISTENCE_NORMAL;
 
 /**
  * The interface for Channel.
@@ -48,24 +52,29 @@ public interface Channel {
     /**
      * Pauses the given group.
      *
-     * @param groupName the name of a group.
+     * @param groupName   the name of a group.
+     * @param targetToken the target token to pause, or null to pause the entire group.
      */
-    void pauseGroup(String groupName);
+    void pauseGroup(String groupName, String targetToken);
 
     /**
      * Resumes transmission for the given group.
      *
-     * @param groupName the name of a group.
+     * @param groupName   the name of a group.
+     * @param targetToken the target token to resume, or null to resume the entire group.
      */
-    void resumeGroup(String groupName);
+    void resumeGroup(String groupName, String targetToken);
 
     /**
-     * Add Log to queue to be persisted and sent.
+     * Add log to queue to be persisted and sent.
      *
-     * @param log       the Log to be enqueued.
+     * @param log       the log to be enqueued.
      * @param groupName the group to use.
+     * @param flags     the flags for this log.
      */
-    void enqueue(@NonNull Log log, @NonNull String groupName);
+    void enqueue(@NonNull Log log,
+                 @NonNull String groupName,
+                 @IntRange(from = PERSISTENCE_NORMAL, to = PERSISTENCE_CRITICAL) int flags);
 
     /**
      * Check whether channel is enabled or disabled.
@@ -156,8 +165,9 @@ public interface Channel {
          *
          * @param log       prepared log.
          * @param groupName group of the log.
+         * @param flags     log flags.
          */
-        void onPreparedLog(@NonNull Log log, @NonNull String groupName);
+        void onPreparedLog(@NonNull Log log, @NonNull String groupName, int flags);
 
         /**
          * Called after a log has been fully prepared and properties are now final.
@@ -185,16 +195,18 @@ public interface Channel {
         /**
          * Called when a group is paused.
          *
-         * @param groupName The group name.
+         * @param groupName   The group name.
+         * @param targetToken The target token is paused, or null when the entire group is paused.
          */
-        void onPaused(@NonNull String groupName);
+        void onPaused(@NonNull String groupName, String targetToken);
 
         /**
          * Called when a group is resumed.
          *
-         * @param groupName The group name.
+         * @param groupName   The group name.
+         * @param targetToken The target token is resumed, or null when the entire group is resumed.
          */
-        void onResumed(@NonNull String groupName);
+        void onResumed(@NonNull String groupName, String targetToken);
     }
 
     /**

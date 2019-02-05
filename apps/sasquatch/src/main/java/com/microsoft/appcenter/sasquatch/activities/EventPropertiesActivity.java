@@ -2,7 +2,6 @@ package com.microsoft.appcenter.sasquatch.activities;
 
 import android.os.Bundle;
 import android.support.v7.app.AppCompatActivity;
-import android.text.TextUtils;
 import android.util.Pair;
 import android.view.LayoutInflater;
 import android.view.Menu;
@@ -19,11 +18,18 @@ import android.widget.Spinner;
 import android.widget.TextView;
 
 import com.microsoft.appcenter.analytics.AnalyticsTransmissionTarget;
+import com.microsoft.appcenter.analytics.EventProperties;
+import com.microsoft.appcenter.ingestion.models.properties.TypedProperty;
 import com.microsoft.appcenter.sasquatch.R;
+import com.microsoft.appcenter.sasquatch.fragments.TypedPropertyFragment;
 import com.microsoft.appcenter.sasquatch.util.EventActivityUtil;
 
+import org.json.JSONObject;
+
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
@@ -36,6 +42,8 @@ public class EventPropertiesActivity extends AppCompatActivity {
     private ListView mListView;
 
     private LinearLayout mAddPropertyLayout;
+
+    private TypedPropertyFragment mTypedPropertyFragment;
 
     private PropertyListAdapter mPropertyListAdapter;
 
@@ -69,9 +77,11 @@ public class EventPropertiesActivity extends AppCompatActivity {
         /* Initialize layout for a new property. */
         mAddPropertyLayout = findViewById(R.id.add_property);
 
+        mTypedPropertyFragment = (TypedPropertyFragment) getSupportFragmentManager().findFragmentById(R.id.typed_property);
+
         /* Initialize list view. */
         mListView = findViewById(R.id.list);
-        mPropertyListAdapter = new PropertyListAdapter(new ArrayList<Pair<String, String>>());
+        mPropertyListAdapter = new PropertyListAdapter(new ArrayList<Pair<String, Object>>());
 
         /*
          * Initialize analytics transmission targets.
@@ -91,69 +101,54 @@ public class EventPropertiesActivity extends AppCompatActivity {
 
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
-        final AnalyticsTransmissionTarget target = getSelectedTarget();
-        if (target != null) {
-            switch (item.getItemId()) {
-                case R.id.action_add:
-                    final TextView keyView = mAddPropertyLayout.findViewById(R.id.key);
-                    final TextView valueView = mAddPropertyLayout.findViewById(R.id.value);
-                    keyView.setText("");
-                    valueView.setText("");
-                    mAddPropertyLayout.setVisibility(View.VISIBLE);
-                    mAddPropertyLayout.findViewById(R.id.add_button).setOnClickListener(new View.OnClickListener() {
+        switch (item.getItemId()) {
+            case R.id.action_add:
+                mTypedPropertyFragment.reset();
+                mAddPropertyLayout.setVisibility(View.VISIBLE);
+                mAddPropertyLayout.findViewById(R.id.add_button).setOnClickListener(new View.OnClickListener() {
 
-                        @Override
-                        public void onClick(View v) {
-                            CharSequence key = keyView.getText();
-                            CharSequence value = valueView.getText();
-                            if (!TextUtils.isEmpty(key) && !TextUtils.isEmpty(value)) {
-                                try {
-                                    target.getPropertyConfigurator().setEventProperty(key.toString(), value.toString());
-                                } catch (Exception e) {
-                                    throw new RuntimeException(e);
-                                }
-                                updatePropertyList();
-                            }
-                            mAddPropertyLayout.setVisibility(View.GONE);
-                        }
-                    });
-                    mAddPropertyLayout.findViewById(R.id.cancel_button).setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        mTypedPropertyFragment.set(getSelectedTarget().getPropertyConfigurator());
+                        updatePropertyList();
+                        mAddPropertyLayout.setVisibility(View.GONE);
+                    }
+                });
+                mAddPropertyLayout.findViewById(R.id.cancel_button).setOnClickListener(new View.OnClickListener() {
 
-                        @Override
-                        public void onClick(View v) {
-                            mAddPropertyLayout.setVisibility(View.GONE);
-                        }
-                    });
-                    break;
-            }
+                    @Override
+                    public void onClick(View v) {
+                        mAddPropertyLayout.setVisibility(View.GONE);
+                    }
+                });
+                break;
         }
         return true;
     }
 
-
     @SuppressWarnings("unchecked")
     private void updatePropertyList() {
-        Field field = null;
         try {
-            if (getSelectedTarget() != null) {
-                field = getSelectedTarget().getPropertyConfigurator().getClass().getDeclaredField("mEventProperties");
-            }
-        } catch (NoSuchFieldException ignore) {
-        }
-        if (field != null) {
+            Field field = getSelectedTarget().getPropertyConfigurator().getClass().getDeclaredField("mEventProperties");
             field.setAccessible(true);
-            Map<String, String> properties;
+            EventProperties eventProperties;
             try {
-                properties = (Map<String, String>) field.get(getSelectedTarget().getPropertyConfigurator());
+                eventProperties = (EventProperties) field.get(getSelectedTarget().getPropertyConfigurator());
             } catch (IllegalAccessException e) {
                 throw new RuntimeException(e);
             }
+            Method method = eventProperties.getClass().getDeclaredMethod("getProperties");
+            method.setAccessible(true);
+            Map<String, TypedProperty> properties = (Map<String, TypedProperty>) method.invoke(eventProperties);
             mPropertyListAdapter.mList.clear();
-            for (Map.Entry<String, String> entry : properties.entrySet()) {
-                mPropertyListAdapter.mList.add(new Pair<>(entry.getKey(), entry.getValue()));
+            for (Map.Entry<String, TypedProperty> entry : properties.entrySet()) {
+                Object value = entry.getValue().getClass().getMethod("getValue").invoke(entry.getValue());
+                mPropertyListAdapter.mList.add(new Pair<>(entry.getKey(), value));
             }
             mListView.setAdapter(mPropertyListAdapter);
             mPropertyListAdapter.notifyDataSetChanged();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
         }
     }
 
@@ -163,11 +158,11 @@ public class EventPropertiesActivity extends AppCompatActivity {
 
     private class PropertyListAdapter extends BaseAdapter {
 
-        private final static String KEY_VALUE_PAIR_FORMAT = "\"%s\":\"%s\"";
+        private final static String KEY_VALUE_PAIR_FORMAT = "%s:%s";
 
-        private final List<Pair<String, String>> mList;
+        private final List<Pair<String, Object>> mList;
 
-        private PropertyListAdapter(List<Pair<String, String>> list) {
+        private PropertyListAdapter(List<Pair<String, Object>> list) {
             mList = list;
         }
 
@@ -192,7 +187,7 @@ public class EventPropertiesActivity extends AppCompatActivity {
 
             /* Set key and value strings to the view. */
             View rowView;
-            final Pair<String, String> item = (Pair<String, String>) getItem(position);
+            final Pair<String, Object> item = (Pair<String, Object>) getItem(position);
             ViewHolder holder;
             if (convertView != null && convertView.getTag() != null) {
                 holder = (ViewHolder) convertView.getTag();
@@ -204,8 +199,12 @@ public class EventPropertiesActivity extends AppCompatActivity {
                 holder = new ViewHolder(textView, imageButton);
                 rowView.setTag(holder);
             }
-            holder.mTextView.setText(String.format(KEY_VALUE_PAIR_FORMAT, item.first, item.second));
-            holder.mImageButton.setOnClickListener(new View.OnClickListener() {
+            Object value = item.second;
+            if (value instanceof String || value instanceof Date) {
+                value = JSONObject.quote(value.toString());
+            }
+            holder.mTextView.setText(String.format(KEY_VALUE_PAIR_FORMAT, JSONObject.quote(item.first), value.toString()));
+            holder.mRemoveButton.setOnClickListener(new View.OnClickListener() {
 
                 @Override
                 public void onClick(View v) {
@@ -224,11 +223,11 @@ public class EventPropertiesActivity extends AppCompatActivity {
 
             private final TextView mTextView;
 
-            private final ImageButton mImageButton;
+            private final ImageButton mRemoveButton;
 
-            private ViewHolder(TextView textView, ImageButton imageButton) {
+            private ViewHolder(TextView textView, ImageButton removeButton) {
                 mTextView = textView;
-                mImageButton = imageButton;
+                mRemoveButton = removeButton;
             }
         }
     }

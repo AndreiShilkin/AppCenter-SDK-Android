@@ -37,7 +37,6 @@ import com.microsoft.appcenter.sasquatch.listeners.SasquatchCrashesListener;
 import com.microsoft.appcenter.sasquatch.listeners.SasquatchDistributeListener;
 import com.microsoft.appcenter.sasquatch.listeners.SasquatchPushListener;
 import com.microsoft.appcenter.utils.async.AppCenterConsumer;
-import com.microsoft.appcenter.utils.async.AppCenterFuture;
 
 import java.lang.reflect.Method;
 import java.util.UUID;
@@ -50,6 +49,8 @@ public class MainActivity extends AppCompatActivity {
 
     static final String TARGET_KEY = "target";
 
+    static final String USER_ID_KEY = "userId";
+
     static final String APPCENTER_START_TYPE = "appCenterStartType";
 
     static final String LOG_URL_KEY = "logUrl";
@@ -57,6 +58,8 @@ public class MainActivity extends AppCompatActivity {
     static final String FIREBASE_ENABLED_KEY = "firebaseEnabled";
 
     static final String MAX_STORAGE_SIZE_KEY = "maxStorageSize";
+
+    private final int DATABASE_SIZE_MULTIPLE = 4096;
 
     private static final String SENDER_ID = "177539951155";
 
@@ -155,6 +158,12 @@ public class MainActivity extends AppCompatActivity {
         String startType = sSharedPreferences.getString(APPCENTER_START_TYPE, StartType.APP_SECRET.toString());
         startAppCenter(getApplication(), startType);
 
+        /* Set user id. */
+        String userId = sSharedPreferences.getString(USER_ID_KEY, null);
+        if (userId != null) {
+            setUserId(userId);
+        }
+
         /* Attach NDK Crash Handler after SDK is initialized. */
         Crashes.getMinidumpDirectory().thenAccept(new AppCenterConsumer<String>() {
 
@@ -208,34 +217,23 @@ public class MainActivity extends AppCompatActivity {
         Push.setSenderId(SENDER_ID);
     }
 
+    @SuppressWarnings("unchecked")
     private void setMaxStorageSize() {
+        if (AppCenter.isConfigured()) {
+            return;
+        }
         final long maxStorageSize = sSharedPreferences.getLong(MAX_STORAGE_SIZE_KEY, 0);
         if (maxStorageSize <= 0) {
             return;
         }
-
-        // TODO remove reflection once new APIs available in jCenter.
-        // AppCenter.setMaxStorageSize(maxStorageSize)
-        AppCenterFuture<Boolean> future;
-        {
-            try {
-                Method method = AppCenter.class.getMethod("setMaxStorageSize", long.class);
-
-                //noinspection unchecked
-                future = (AppCenterFuture<Boolean>) method.invoke(null, maxStorageSize);
-            } catch (Exception ignored) {
-                return;
-            }
-        }
-        future.thenAccept(new AppCenterConsumer<Boolean>() {
+        AppCenter.setMaxStorageSize(maxStorageSize).thenAccept(new AppCenterConsumer<Boolean>() {
 
             @Override
             public void accept(Boolean succeeded) {
-                final int ALLOWED_SIZE_MULTIPLE = 4096;
                 if (succeeded) {
 
                     /* SQLite always use the next multiple of 4KB as maximum size. */
-                    long expectedMultipleMaxSize = (long) Math.ceil((double) maxStorageSize / (double) ALLOWED_SIZE_MULTIPLE) * ALLOWED_SIZE_MULTIPLE;
+                    long expectedMultipleMaxSize = (long) Math.ceil((double) maxStorageSize / (double) DATABASE_SIZE_MULTIPLE) * DATABASE_SIZE_MULTIPLE;
                     Toast.makeText(MainActivity.this, String.format(
                             MainActivity.this.getString(R.string.max_storage_size_change_success),
                             Formatter.formatFileSize(MainActivity.this, expectedMultipleMaxSize)), Toast.LENGTH_SHORT).show();
@@ -246,11 +244,14 @@ public class MainActivity extends AppCompatActivity {
                     Toast.makeText(MainActivity.this, R.string.max_storage_size_change_failed, Toast.LENGTH_SHORT).show();
                     String DATABASE_NAME = "com.microsoft.appcenter.persistence";
                     long fileSize = getDatabasePath(DATABASE_NAME).length();
-                    long maxSize = (long) Math.ceil((double) fileSize / (double) ALLOWED_SIZE_MULTIPLE) * ALLOWED_SIZE_MULTIPLE;
-                    sSharedPreferences.edit().putLong(MAX_STORAGE_SIZE_KEY, maxSize).apply();
+                    sSharedPreferences.edit().putLong(MAX_STORAGE_SIZE_KEY, fileSize).apply();
                 }
             }
         });
+    }
+
+    public static void setUserId(String userId) {
+        AppCenter.setUserId(userId);
     }
 
     @Override

@@ -15,6 +15,7 @@ import com.microsoft.appcenter.ingestion.models.Device;
 import com.microsoft.appcenter.ingestion.models.Log;
 import com.microsoft.appcenter.ingestion.models.LogContainer;
 import com.microsoft.appcenter.ingestion.models.json.LogSerializer;
+import com.microsoft.appcenter.ingestion.models.one.PartAUtils;
 import com.microsoft.appcenter.persistence.DatabasePersistence;
 import com.microsoft.appcenter.persistence.Persistence;
 import com.microsoft.appcenter.utils.AppCenterLog;
@@ -25,6 +26,7 @@ import com.microsoft.appcenter.utils.IdHelper;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -40,7 +42,7 @@ import static com.microsoft.appcenter.AppCenter.LOG_TAG;
 public class DefaultChannel implements Channel {
 
     /**
-     * Persistence batch size for {@link Persistence#getLogs(String, int, List)} when clearing.
+     * Persistence batch size for {@link Persistence#getLogs(String, Collection, int, List)} when clearing.
      */
     @VisibleForTesting
     static final int CLEAR_BATCH_SIZE = 100;
@@ -158,7 +160,7 @@ public class DefaultChannel implements Channel {
     }
 
     @Override
-    public boolean setMaxStorageSize(long maxStorageSizeInBytes) {
+    public synchronized boolean setMaxStorageSize(long maxStorageSizeInBytes) {
         return mPersistence.setMaxStorageSize(maxStorageSizeInBytes);
     }
 
@@ -186,7 +188,7 @@ public class DefaultChannel implements Channel {
         if (mEnabled) {
             for (GroupState groupState : mGroupStates.values()) {
                 if (groupState.mIngestion == mIngestion) {
-                    checkPendingLogs(groupState.mName);
+                    checkPendingLogs(groupState);
                 }
             }
         }
@@ -205,11 +207,15 @@ public class DefaultChannel implements Channel {
         /* Count pending logs. */
         groupState.mPendingLogCount = mPersistence.countLogs(groupName);
 
-        /* If no app secret, don't resume sending App Center logs from storage. */
-        if (mAppSecret != null && mIngestion == ingestion) {
+        /*
+         * If no app secret, don't resume sending App Center logs from storage.
+         * If the ingestion is alternate implementation we assume One Collector
+         * and thus we have the keys in database.
+         */
+        if (mAppSecret != null || mIngestion != ingestion) {
 
             /* Schedule sending any pending log. */
-            checkPendingLogs(groupState.mName);
+            checkPendingLogs(groupState);
         }
 
         /* Call listeners so that they can react on group adding. */
@@ -233,31 +239,55 @@ public class DefaultChannel implements Channel {
     }
 
     @Override
-    public synchronized void pauseGroup(String groupName) {
+    public synchronized void pauseGroup(String groupName, String targetToken) {
         GroupState groupState = mGroupStates.get(groupName);
-        if (groupState != null && !groupState.mPaused) {
-            AppCenterLog.debug(LOG_TAG, "pauseGroup(" + groupName + ")");
-            groupState.mPaused = true;
-            cancelTimer(groupState);
+        if (groupState != null) {
+            if (targetToken != null) {
+                String targetKey = PartAUtils.getTargetKey(targetToken);
+                if (groupState.mPausedTargetKeys.add(targetKey)) {
+                    AppCenterLog.debug(LOG_TAG, "pauseGroup(" + groupName + ", " + targetKey + ")");
+                }
+            } else if (!groupState.mPaused) {
+                AppCenterLog.debug(LOG_TAG, "pauseGroup(" + groupName + ")");
+                groupState.mPaused = true;
+                cancelTimer(groupState);
+            }
 
             /* Call listeners so that they can react on group resuming. */
             for (Listener listener : mListeners) {
-                listener.onPaused(groupName);
+                listener.onPaused(groupName, targetToken);
             }
         }
     }
 
     @Override
-    public synchronized void resumeGroup(String groupName) {
+    public synchronized void resumeGroup(String groupName, String targetToken) {
         GroupState groupState = mGroupStates.get(groupName);
-        if (groupState != null && groupState.mPaused) {
-            AppCenterLog.debug(LOG_TAG, "resumeGroup(" + groupName + ")");
-            groupState.mPaused = false;
-            checkPendingLogs(groupState.mName);
+        if (groupState != null) {
+            if (targetToken != null) {
+                String targetKey = PartAUtils.getTargetKey(targetToken);
+                if (groupState.mPausedTargetKeys.remove(targetKey)) {
+
+                    /*
+                     * Log count can be 0 in memory because of the partial pause, but we might have
+                     * logs in storage for this key, a simple fix is to reevaluate log count and check
+                     * for logs again. This might create a batch with fewer logs than expected as
+                     * the log count does not exclude logs with paused keys, this would be an optimization
+                     * that does not seem necessary for now.
+                     */
+                    AppCenterLog.debug(LOG_TAG, "resumeGroup(" + groupName + ", " + targetKey + ")");
+                    groupState.mPendingLogCount = mPersistence.countLogs(groupName);
+                    checkPendingLogs(groupState);
+                }
+            } else if (groupState.mPaused) {
+                AppCenterLog.debug(LOG_TAG, "resumeGroup(" + groupName + ")");
+                groupState.mPaused = false;
+                checkPendingLogs(groupState);
+            }
 
             /* Call listeners so that they can react on group resuming. */
             for (Listener listener : mListeners) {
-                listener.onResumed(groupName);
+                listener.onResumed(groupName, targetToken);
             }
         }
     }
@@ -286,8 +316,8 @@ public class DefaultChannel implements Channel {
             for (Ingestion ingestion : mIngestions) {
                 ingestion.reopen();
             }
-            for (String groupName : mGroupStates.keySet()) {
-                checkPendingLogs(groupName);
+            for (GroupState groupState : mGroupStates.values()) {
+                checkPendingLogs(groupState);
             }
         } else {
             suspend(true, new CancellationException());
@@ -344,12 +374,11 @@ public class DefaultChannel implements Channel {
             /* Delete all other batches and call callback method that are currently in progress. */
             for (Iterator<Map.Entry<String, List<Log>>> iterator = groupState.mSendingBatches.entrySet().iterator(); iterator.hasNext(); ) {
                 Map.Entry<String, List<Log>> entry = iterator.next();
-                List<Log> removedLogsForBatchId = groupState.mSendingBatches.get(entry.getKey());
                 iterator.remove();
                 if (deleteLogs) {
                     GroupListener groupListener = groupState.mListener;
                     if (groupListener != null) {
-                        for (Log log : removedLogsForBatchId) {
+                        for (Log log : entry.getValue()) {
                             groupListener.onFailure(log, exception);
                         }
                     }
@@ -374,7 +403,7 @@ public class DefaultChannel implements Channel {
 
     private void deleteLogsOnSuspended(final GroupState groupState) {
         final List<Log> logs = new ArrayList<>();
-        mPersistence.getLogs(groupState.mName, CLEAR_BATCH_SIZE, logs);
+        mPersistence.getLogs(groupState.mName, Collections.<String>emptyList(), CLEAR_BATCH_SIZE, logs);
         if (logs.size() > 0 && groupState.mListener != null) {
             for (Log log : logs) {
                 groupState.mListener.onBeforeSending(log);
@@ -396,28 +425,21 @@ public class DefaultChannel implements Channel {
         }
     }
 
-    @VisibleForTesting
-    @SuppressWarnings("SameParameterValue")
-    synchronized int getCounter(@NonNull String groupName) {
-        return mGroupStates.get(groupName).mPendingLogCount;
-    }
-
     /**
      * This will, if we're not using the limit for pending batches, trigger sending of a new request.
      * It will also reset the counters for sending out items for both the number of items enqueued and
      * the handlers. It will do this even if we don't have reached the limit
      * of pending batches or the time interval.
      *
-     * @param groupName the group name
+     * @param groupState the group state.
      */
-    private synchronized void triggerIngestion(final @NonNull String groupName) {
+    private synchronized void triggerIngestion(final @NonNull GroupState groupState) {
         if (!mEnabled) {
             return;
         }
-        final GroupState groupState = mGroupStates.get(groupName);
         int pendingLogCount = groupState.mPendingLogCount;
         int maxFetch = Math.min(pendingLogCount, groupState.mMaxLogsPerBatch);
-        AppCenterLog.debug(LOG_TAG, "triggerIngestion(" + groupName + ") pendingLogCount=" + pendingLogCount);
+        AppCenterLog.debug(LOG_TAG, "triggerIngestion(" + groupState.mName + ") pendingLogCount=" + pendingLogCount);
         cancelTimer(groupState);
 
         /* Check if we have reached the maximum number of pending batches, log to LogCat and don't trigger another sending. */
@@ -429,7 +451,7 @@ public class DefaultChannel implements Channel {
         /* Get a batch from Persistence. */
         final List<Log> batch = new ArrayList<>(maxFetch);
         final int stateSnapshot = mCurrentState;
-        final String batchId = mPersistence.getLogs(groupName, maxFetch, batch);
+        final String batchId = mPersistence.getLogs(groupState.mName, groupState.mPausedTargetKeys, maxFetch, batch);
 
         /* Decrement counter. */
         groupState.mPendingLogCount -= maxFetch;
@@ -495,7 +517,7 @@ public class DefaultChannel implements Channel {
 
                         @Override
                         public void run() {
-                            handleSendingSuccess(groupState, currentState, batchId);
+                            handleSendingSuccess(groupState, batchId);
                         }
                     });
                 }
@@ -506,7 +528,7 @@ public class DefaultChannel implements Channel {
 
                         @Override
                         public void run() {
-                            handleSendingFailure(groupState, currentState, batchId, e);
+                            handleSendingFailure(groupState, batchId, e);
                         }
                     });
                 }
@@ -525,29 +547,27 @@ public class DefaultChannel implements Channel {
 
     private void checkPendingLogsAfterPost(@NonNull final GroupState groupState, int currentState) {
         if (checkStateDidNotChange(groupState, currentState)) {
-            checkPendingLogs(groupState.mName);
+            checkPendingLogs(groupState);
         }
     }
 
     /**
      * The actual implementation to react to sending a batch to the server successfully.
      *
-     * @param groupState   The group state.
-     * @param currentState The current state.
-     * @param batchId      The batch ID.
+     * @param groupState The group state.
+     * @param batchId    The batch ID.
      */
-    private synchronized void handleSendingSuccess(@NonNull final GroupState groupState, int currentState, @NonNull final String batchId) {
-        if (checkStateDidNotChange(groupState, currentState)) {
-            String groupName = groupState.mName;
-            mPersistence.deleteLogs(groupName, batchId);
-            List<Log> removedLogsForBatchId = groupState.mSendingBatches.remove(batchId);
+    private synchronized void handleSendingSuccess(@NonNull GroupState groupState, @NonNull String batchId) {
+        List<Log> removedLogsForBatchId = groupState.mSendingBatches.remove(batchId);
+        if (removedLogsForBatchId != null) {
+            mPersistence.deleteLogs(groupState.mName, batchId);
             GroupListener groupListener = groupState.mListener;
             if (groupListener != null) {
                 for (Log log : removedLogsForBatchId) {
                     groupListener.onSuccess(log);
                 }
             }
-            checkPendingLogs(groupName);
+            checkPendingLogs(groupState);
         }
     }
 
@@ -556,16 +576,15 @@ public class DefaultChannel implements Channel {
      * Will disable the sender in case of a recoverable error.
      * Will delete batch of data in case of a non-recoverable error.
      *
-     * @param groupState   the group state
-     * @param currentState the current state
-     * @param batchId      the batch ID
-     * @param e            the exception
+     * @param groupState the group state
+     * @param batchId    the batch ID
+     * @param e          the exception
      */
-    private synchronized void handleSendingFailure(@NonNull final GroupState groupState, int currentState, @NonNull final String batchId, @NonNull final Exception e) {
-        if (checkStateDidNotChange(groupState, currentState)) {
-            String groupName = groupState.mName;
+    private synchronized void handleSendingFailure(@NonNull GroupState groupState, @NonNull String batchId, @NonNull Exception e) {
+        String groupName = groupState.mName;
+        List<Log> removedLogsForBatchId = groupState.mSendingBatches.remove(batchId);
+        if (removedLogsForBatchId != null) {
             AppCenterLog.error(LOG_TAG, "Sending logs groupName=" + groupName + " id=" + batchId + " failed", e);
-            List<Log> removedLogsForBatchId = groupState.mSendingBatches.remove(batchId);
             boolean recoverableError = HttpUtils.isRecoverableError(e);
             if (recoverableError) {
                 groupState.mPendingLogCount += removedLogsForBatchId.size();
@@ -581,17 +600,11 @@ public class DefaultChannel implements Channel {
         }
     }
 
-    /**
-     * Actual implementation of enqueue logic. Will increase counters, triggers of batching logic.
-     *
-     * @param log       the Log to be enqueued
-     * @param groupName the queue to use
-     */
     @Override
-    public synchronized void enqueue(@NonNull Log log, @NonNull final String groupName) {
+    public synchronized void enqueue(@NonNull Log log, @NonNull final String groupName, int flags) {
 
         /* Check group name is registered. */
-        final GroupState groupState = mGroupStates.get(groupName);
+        GroupState groupState = mGroupStates.get(groupName);
         if (groupState == null) {
             AppCenterLog.error(LOG_TAG, "Invalid group name:" + groupName);
             return;
@@ -636,7 +649,7 @@ public class DefaultChannel implements Channel {
 
         /* Notify listeners that log is prepared and is in a final state. */
         for (Listener listener : mListeners) {
-            listener.onPreparedLog(log, groupName);
+            listener.onPreparedLog(log, groupName, flags);
         }
 
         /* Call listeners so that they can filter the log. */
@@ -655,21 +668,34 @@ public class DefaultChannel implements Channel {
                 AppCenterLog.debug(LOG_TAG, "Log of type '" + log.getType() + "' was not filtered out by listener(s) but no app secret was provided. Not persisting/sending the log.");
                 return;
             }
-
-            /* Persist log if not filtered out. */
             try {
 
-                /* Increment counters and schedule ingestion if we are enabled. */
-                mPersistence.putLog(groupName, log);
-                groupState.mPendingLogCount++;
-                AppCenterLog.debug(LOG_TAG, "enqueue(" + groupState.mName + ") pendingLogCount=" + groupState.mPendingLogCount);
-                if (mEnabled) {
-                    checkPendingLogs(groupState.mName);
-                } else {
-                    AppCenterLog.warn(LOG_TAG, "Channel is temporarily disabled, log was saved to disk.");
-                }
+                /* Persist log. */
+                mPersistence.putLog(log, groupName, flags);
             } catch (Persistence.PersistenceException e) {
-                AppCenterLog.error(LOG_TAG, "Error persisting log with exception: " + e.toString());
+                AppCenterLog.error(LOG_TAG, "Error persisting log", e);
+                if (groupState.mListener != null) {
+                    groupState.mListener.onBeforeSending(log);
+                    groupState.mListener.onFailure(log, e);
+                }
+                return;
+            }
+
+            /* Nothing more to do if the log is from a paused transmission target. */
+            Iterator<String> targetKeys = log.getTransmissionTargetTokens().iterator();
+            String targetKey = targetKeys.hasNext() ? PartAUtils.getTargetKey(targetKeys.next()) : null;
+            if (groupState.mPausedTargetKeys.contains(targetKey)) {
+                AppCenterLog.debug(LOG_TAG, "Transmission target ikey=" + targetKey + " is paused.");
+                return;
+            }
+
+            /* Increment counters and schedule ingestion if we are enabled. */
+            groupState.mPendingLogCount++;
+            AppCenterLog.debug(LOG_TAG, "enqueue(" + groupState.mName + ") pendingLogCount=" + groupState.mPendingLogCount);
+            if (mEnabled) {
+                checkPendingLogs(groupState);
+            } else {
+                AppCenterLog.debug(LOG_TAG, "Channel is temporarily disabled, log was saved to disk.");
             }
         }
     }
@@ -677,19 +703,18 @@ public class DefaultChannel implements Channel {
     /**
      * Check for logs to trigger immediately or schedule with a timer or does nothing if no logs.
      *
-     * @param groupName the group name.
+     * @param groupState the group state.
      */
     @VisibleForTesting
-    synchronized void checkPendingLogs(@NonNull String groupName) {
-        GroupState groupState = mGroupStates.get(groupName);
+    synchronized void checkPendingLogs(@NonNull GroupState groupState) {
         if (groupState.mPaused) {
-            AppCenterLog.debug(LOG_TAG, groupName + " is paused. Skip checking pending logs.");
+            AppCenterLog.debug(LOG_TAG, groupState.mName + " is paused. Skip checking pending logs.");
             return;
         }
         long pendingLogCount = groupState.mPendingLogCount;
-        AppCenterLog.debug(LOG_TAG, "checkPendingLogs(" + groupName + ") pendingLogCount=" + pendingLogCount);
+        AppCenterLog.debug(LOG_TAG, "checkPendingLogs(" + groupState.mName + ") pendingLogCount=" + pendingLogCount);
         if (pendingLogCount >= groupState.mMaxLogsPerBatch) {
-            triggerIngestion(groupName);
+            triggerIngestion(groupState);
         } else if (pendingLogCount > 0 && !groupState.mScheduled) {
             groupState.mScheduled = true;
             mAppCenterHandler.postDelayed(groupState.mRunnable, groupState.mBatchTimeInterval);
@@ -697,7 +722,7 @@ public class DefaultChannel implements Channel {
     }
 
     @VisibleForTesting
-    GroupState getGroupState(String groupName) {
+    GroupState getGroupState(@SuppressWarnings("SameParameterValue") String groupName) {
         return mGroupStates.get(groupName);
     }
 
@@ -723,7 +748,7 @@ public class DefaultChannel implements Channel {
     class GroupState {
 
         /**
-         * Group name
+         * Group name.
          */
         final String mName;
 
@@ -773,6 +798,11 @@ public class DefaultChannel implements Channel {
         boolean mPaused;
 
         /**
+         * List of paused target keys.
+         */
+        final Collection<String> mPausedTargetKeys = new HashSet<>();
+
+        /**
          * Runnable that triggers ingestion of this group data
          * and triggers itself in {@link #mBatchTimeInterval} ms.
          */
@@ -781,7 +811,7 @@ public class DefaultChannel implements Channel {
             @Override
             public void run() {
                 mScheduled = false;
-                triggerIngestion(mName);
+                triggerIngestion(GroupState.this);
             }
         };
 

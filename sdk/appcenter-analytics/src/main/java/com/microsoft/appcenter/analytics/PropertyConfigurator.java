@@ -9,9 +9,14 @@ import com.microsoft.appcenter.ingestion.models.Log;
 import com.microsoft.appcenter.ingestion.models.one.AppExtension;
 import com.microsoft.appcenter.ingestion.models.one.CommonSchemaLog;
 import com.microsoft.appcenter.ingestion.models.one.DeviceExtension;
+import com.microsoft.appcenter.ingestion.models.one.UserExtension;
+import com.microsoft.appcenter.ingestion.models.properties.TypedProperty;
+import com.microsoft.appcenter.utils.UserIdContext;
 
-import java.util.HashMap;
+import java.util.Date;
 import java.util.Map;
+
+import static com.microsoft.appcenter.Constants.COMMON_SCHEMA_PREFIX_SEPARATOR;
 
 /**
  * Allow overriding Part A properties.
@@ -21,7 +26,7 @@ public class PropertyConfigurator extends AbstractChannelListener {
     /**
      * Common schema prefix for Android device IDs.
      */
-    private static final String ANDROID_DEVICE_ID_PREFIX = "a:";
+    private static final String ANDROID_DEVICE_ID_PREFIX = "a" + COMMON_SCHEMA_PREFIX_SEPARATOR;
 
     /**
      * App name to override common schema part A 'app.name'.
@@ -39,6 +44,11 @@ public class PropertyConfigurator extends AbstractChannelListener {
     private String mAppLocale;
 
     /**
+     * User identifier to override common schema part A 'user.localId'.
+     */
+    private String mUserId;
+
+    /**
      * Flag to enable populating common schema 'device.localId'.
      */
     private boolean mDeviceIdEnabled;
@@ -51,7 +61,7 @@ public class PropertyConfigurator extends AbstractChannelListener {
     /**
      * Common event properties for this target. Inherited by children.
      */
-    private final Map<String, String> mEventProperties = new HashMap<>();
+    private final EventProperties mEventProperties = new EventProperties();
 
     /**
      * Create a new property configurator.
@@ -72,6 +82,7 @@ public class PropertyConfigurator extends AbstractChannelListener {
     public void onPreparingLog(@NonNull Log log, @NonNull String groupName) {
         if (shouldOverridePartAProperties(log)) {
             AppExtension app = ((CommonSchemaLog) log).getExt().getApp();
+            UserExtension user = ((CommonSchemaLog) log).getExt().getUser();
             DeviceExtension device = ((CommonSchemaLog) log).getExt().getDevice();
 
             /* Override app name if not null, else use the name of the nearest parent. */
@@ -113,6 +124,19 @@ public class PropertyConfigurator extends AbstractChannelListener {
                 }
             }
 
+            /* Override userId if not null, else use the userId of the nearest parent. */
+            if (mUserId != null) {
+                user.setLocalId(mUserId);
+            } else {
+                for (AnalyticsTransmissionTarget target = mTransmissionTarget.mParentTarget; target != null; target = target.mParentTarget) {
+                    String parentUserId = target.getPropertyConfigurator().getUserId();
+                    if (parentUserId != null) {
+                        user.setLocalId(parentUserId);
+                        break;
+                    }
+                }
+            }
+
             /* Fill out the device id if it has been collected. */
             if (mDeviceIdEnabled) {
 
@@ -131,15 +155,14 @@ public class PropertyConfigurator extends AbstractChannelListener {
      * @return true if log should be overridden, false otherwise.
      */
     private boolean shouldOverridePartAProperties(@NonNull Log log) {
-        String targetToken = mTransmissionTarget.getTransmissionTargetToken();
-        return log instanceof CommonSchemaLog && mTransmissionTarget.isEnabled()
-                && log.getTransmissionTargetTokens().contains(targetToken);
+        return log instanceof CommonSchemaLog && log.getTag() == mTransmissionTarget &&
+                mTransmissionTarget.isEnabled();
     }
 
     /**
-     * Get app name. Used for checking parents for property inheritance.
+     * Get app name.
      *
-     * @return App name
+     * @return App name.
      */
     private String getAppName() {
         return mAppName;
@@ -148,16 +171,22 @@ public class PropertyConfigurator extends AbstractChannelListener {
     /**
      * Override common schema Part A property App.Name.
      *
-     * @param appName App name
+     * @param appName App name.
      */
-    public void setAppName(String appName) {
-        mAppName = appName;
+    public void setAppName(final String appName) {
+        Analytics.getInstance().postCommandEvenIfDisabled(new Runnable() {
+
+            @Override
+            public void run() {
+                mAppName = appName;
+            }
+        });
     }
 
     /**
-     * Get app version. Used for checking parents for property inheritance.
+     * Get app version.
      *
-     * @return App version
+     * @return App version.
      */
     private String getAppVersion() {
         return mAppVersion;
@@ -166,16 +195,22 @@ public class PropertyConfigurator extends AbstractChannelListener {
     /**
      * Override common schema Part A property App.Version.
      *
-     * @param appVersion App version
+     * @param appVersion App version.
      */
-    public void setAppVersion(String appVersion) {
-        mAppVersion = appVersion;
+    public void setAppVersion(final String appVersion) {
+        Analytics.getInstance().postCommandEvenIfDisabled(new Runnable() {
+
+            @Override
+            public void run() {
+                mAppVersion = appVersion;
+            }
+        });
     }
 
     /**
-     * Get app locale. Used for checking parents for property inheritance.
+     * Get app locale.
      *
-     * @return App locale
+     * @return App locale.
      */
     private String getAppLocale() {
         return mAppLocale;
@@ -184,22 +219,101 @@ public class PropertyConfigurator extends AbstractChannelListener {
     /**
      * Override common schema Part A property App.Locale.
      *
-     * @param appLocale App Locale
+     * @param appLocale App Locale.
      */
-    public void setAppLocale(String appLocale) {
-        mAppLocale = appLocale;
+    public void setAppLocale(final String appLocale) {
+        Analytics.getInstance().postCommandEvenIfDisabled(new Runnable() {
+
+            @Override
+            public void run() {
+                mAppLocale = appLocale;
+            }
+        });
+    }
+
+    /**
+     * Get user id.
+     *
+     * @return user id.
+     */
+    private String getUserId() {
+        return mUserId;
+    }
+
+    /**
+     * Set the user identifier.
+     * The user identifier needs to start with the c: prefix or must not have a prefix.
+     * If the prefix is missing, the c: prefix will be automatically added.
+     * The userId cannot be empty or just "c:".
+     *
+     * @param userId user identifier.
+     */
+    @SuppressWarnings("WeakerAccess")
+    public void setUserId(final String userId) {
+        if (UserIdContext.checkUserIdValidForOneCollector(userId)) {
+            Analytics.getInstance().postCommandEvenIfDisabled(new Runnable() {
+
+                @Override
+                public void run() {
+                    mUserId = UserIdContext.getPrefixedUserId(userId);
+                }
+            });
+        }
     }
 
     /**
      * Add or overwrite the given key for the common event properties. Properties will be inherited
      * by children of this transmission target.
      *
-     * @param key   The property key.
-     * @param value The property value.
+     * @param key   The property key. The key must not be null.
+     * @param value The boolean value.
      */
-    @SuppressWarnings("WeakerAccess")
+    public synchronized void setEventProperty(String key, boolean value) {
+        mEventProperties.set(key, value);
+    }
+
+    /**
+     * Add or overwrite the given key for the common event properties. Properties will be inherited
+     * by children of this transmission target.
+     *
+     * @param key   The property key. The key must not be null.
+     * @param value The date value. The value cannot be null.
+     */
+    public synchronized void setEventProperty(String key, Date value) {
+        mEventProperties.set(key, value);
+    }
+
+    /**
+     * Add or overwrite the given key for the common event properties. Properties will be inherited
+     * by children of this transmission target.
+     *
+     * @param key   The property key. The key must not be null.
+     * @param value The double value. The value must not be NaN or infinite.
+     */
+    public synchronized void setEventProperty(String key, double value) {
+        mEventProperties.set(key, value);
+    }
+
+    /**
+     * Add or overwrite the given key for the common event properties. Properties will be inherited
+     * by children of this transmission target.
+     *
+     * @param key   The property key. The key must not be null.
+     * @param value The long value.
+     */
+    public synchronized void setEventProperty(String key, long value) {
+        mEventProperties.set(key, value);
+    }
+
+    /**
+     * Add or overwrite the given key for the common event properties. Properties will be inherited
+     * by children of this transmission target.
+     *
+     * @param key   The property key. The key must not be null.
+     * @param value The string value. The value cannot be null.
+     */
     public synchronized void setEventProperty(String key, String value) {
-        mEventProperties.put(key, value);
+        mEventProperties.set(key, value);
     }
 
     /**
@@ -207,9 +321,8 @@ public class PropertyConfigurator extends AbstractChannelListener {
      *
      * @param key The property key to be removed.
      */
-    @SuppressWarnings("WeakerAccess")
     public synchronized void removeEventProperty(String key) {
-        mEventProperties.remove(key);
+        mEventProperties.getProperties().remove(key);
     }
 
     /**
@@ -217,18 +330,24 @@ public class PropertyConfigurator extends AbstractChannelListener {
      * This does not have any effect on child transmission targets.
      */
     public void collectDeviceId() {
-        mDeviceIdEnabled = true;
+        Analytics.getInstance().postCommandEvenIfDisabled(new Runnable() {
+
+            @Override
+            public void run() {
+                mDeviceIdEnabled = true;
+            }
+        });
     }
 
     /*
      * Extracted method to synchronize on each level at once while reading properties.
      * Nesting synchronize between parent/child could lead to deadlocks.
      */
-    synchronized void mergeEventProperties(Map<String, String> mergedProperties) {
-        for (Map.Entry<String, String> property : mEventProperties.entrySet()) {
+    synchronized void mergeEventProperties(EventProperties mergedProperties) {
+        for (Map.Entry<String, TypedProperty> property : mEventProperties.getProperties().entrySet()) {
             String key = property.getKey();
-            if (!mergedProperties.containsKey(key)) {
-                mergedProperties.put(key, property.getValue());
+            if (!mergedProperties.getProperties().containsKey(key)) {
+                mergedProperties.getProperties().put(key, property.getValue());
             }
         }
     }
